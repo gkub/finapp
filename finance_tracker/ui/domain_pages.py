@@ -5,9 +5,9 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Signal
+from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
@@ -19,7 +19,9 @@ from finance_tracker.db.models import (
     Account, Category, Debt, IncomeSource, InvestmentAccount, InvestmentHolding,
     RecurringExpense, Schedule, ScheduleType, SecurityPrice, Setting,
 )
-from finance_tracker.services.investment_service import PriceUnavailable, value_account
+from finance_tracker.services.currency_service import latest_rate, upsert_rate
+from finance_tracker.services.investment_service import PriceUnavailable, upsert_price, value_account
+from finance_tracker.services.market_data import MarketDataError, fetch_quote as download_quote, fetch_usd_cad
 from finance_tracker.services.schedule_service import occurrences
 from finance_tracker.utils.money import format_money
 
@@ -49,9 +51,59 @@ def titled_page(widget, title, subtitle):
     heading.setObjectName("title")
     note = QLabel(subtitle)
     note.setObjectName("muted")
+    note.setWordWrap(True)
+    note.setWordWrap(True)
     box.addWidget(heading)
     box.addWidget(note)
     return box
+
+
+def projection_prefs(session):
+    days, reserve, currency = 30, Decimal("0"), "CAD"
+    for item in session.scalars(select(Setting)):
+        if item.key == "default_projection_days":
+            days = int(item.value)
+        elif item.key == "cash_reserve_amount":
+            reserve = Decimal(item.value)
+        elif item.key == "reporting_currency":
+            currency = item.value
+    return days, reserve, currency
+
+
+def configure_table(table):
+    """Size every column to its header and cells instead of stretching one column."""
+    table.setAlternatingRowColors(True)
+    table.setWordWrap(False)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
+    table.verticalHeader().setVisible(False)
+    header = table.horizontalHeader()
+    header.setHighlightSections(False)
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(72)
+    header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    header.setTextElideMode(Qt.TextElideMode.ElideNone)
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
+
+def fit_table_columns(table, max_width=280):
+    header = table.horizontalHeader()
+    metrics = header.fontMetrics()
+    table.resizeColumnsToContents()
+    for col in range(table.columnCount()):
+        item = table.horizontalHeaderItem(col)
+        label = item.text() if item else ""
+        header_width = metrics.horizontalAdvance(label) + 28
+        width = max(table.columnWidth(col) + 16, header_width)
+        has_widget = False
+        for row in range(table.rowCount()):
+            widget = table.cellWidget(row, col)
+            if widget is not None:
+                has_widget = True
+                width = max(width, widget.sizeHint().width() + 20)
+        cap = width if has_widget else min(width, max_width)
+        table.setColumnWidth(col, max(header_width, cap))
 
 
 def account_choices(combo, include_blank=True):
@@ -62,10 +114,60 @@ def account_choices(combo, include_blank=True):
             combo.addItem(account.name, account.id)
 
 
+def payment_method_choices(combo, include_blank=True):
+    combo.clear()
+    if include_blank:
+        combo.addItem("None", None)
+    with session_scope() as session:
+        for account in session.scalars(select(Account).where(Account.active.is_(True)).order_by(Account.name)):
+            combo.addItem(account.name, f"account:{account.id}")
+        cards = session.scalars(
+            select(Debt).where(Debt.active.is_(True), Debt.debt_type == "credit_card").order_by(Debt.name)
+        )
+        for debt in cards:
+            combo.addItem(f"{debt.name} (credit card)", f"debt:{debt.id}")
+
+
+def payment_method_ids(combo):
+    data = combo.currentData()
+    if not data:
+        return None, None
+    kind, _, ident = data.partition(":")
+    if not ident:
+        return None, None
+    value = int(ident)
+    if kind == "debt":
+        return None, value
+    return value, None
+
+
+def set_payment_method(combo, account_id=None, debt_id=None):
+    if debt_id:
+        target = f"debt:{debt_id}"
+    elif account_id:
+        target = f"account:{account_id}"
+    else:
+        target = None
+    index = combo.findData(target)
+    if index >= 0:
+        combo.setCurrentIndex(index)
+
+
+def payment_method_label(session, account_id=None, debt_id=None):
+    if debt_id:
+        debt = session.get(Debt, debt_id)
+        return f"{debt.name} (card)" if debt else "—"
+    if account_id:
+        account = session.get(Account, account_id)
+        return account.name if account else "—"
+    return "—"
+
+
 class ScheduleFields:
-    def __init__(self, form):
+    def __init__(self, form, default="monthly"):
         self.kind = QComboBox()
-        self.kind.addItems(["one_time", "weekly", "every_n_weeks", "monthly", "every_n_months", "yearly"])
+        self.kind.addItems(["monthly", "every_n_weeks", "weekly", "every_n_months", "yearly", "one_time"])
+        self.kind.setCurrentText(default)
         self.anchor = QDateEdit(QDate.currentDate())
         self.anchor.setCalendarPopup(True)
         self.interval = QDoubleSpinBox()
@@ -162,9 +264,10 @@ class ExpenseDialog(BaseDialog):
         self.priority = QComboBox()
         self.priority.addItems(["essential", "important", "luxury", "expendable"])
         self.account = QComboBox()
-        account_choices(self.account)
+        payment_method_choices(self.account)
         for label, field in (("Name", self.name), ("Amount", self.amount), ("Currency", self.currency),
-                             ("Category", self.category), ("Priority", self.priority), ("Payment account", self.account)):
+                             ("Category", self.category), ("Priority", self.priority),
+                             ("Paid from / charged to", self.account)):
             form.addRow(label, field)
         self.schedule = ScheduleFields(form)
         self.finish(form)
@@ -184,17 +287,52 @@ class DebtDialog(BaseDialog):
         self.currency.addItems(["CAD", "USD"])
         self.rate = QDoubleSpinBox()
         self.rate.setRange(0, 999)
-        self.rate.setDecimals(3)
+        self.rate.setDecimals(4)
         self.rate.setSuffix(" %")
+        self.rate_period = QComboBox()
+        self.rate_period.addItems(["per year", "per month"])
+        self.rate_period.setToolTip("Monthly rates are converted to an annual rate (× 12) when saved.")
+        self._period = "per year"
+        self.rate_period.currentTextChanged.connect(self.convert_rate_period)
+        rate_row = QHBoxLayout()
+        rate_row.addWidget(self.rate, 1)
+        rate_row.addWidget(self.rate_period)
         self.payment = money_spin()
         self.account = QComboBox()
         account_choices(self.account)
         for label, field in (("Name", self.name), ("Type", self.kind), ("Balance owed", self.balance),
-                             ("Currency", self.currency), ("Annual interest rate", self.rate),
-                             ("Minimum payment", self.payment), ("Payment account", self.account)):
+                             ("Currency", self.currency)):
             form.addRow(label, field)
+        form.addRow("Interest rate", rate_row)
+        form.addRow("Minimum payment", self.payment)
+        form.addRow("Paid from (bank)", self.account)
         self.schedule = ScheduleFields(form)
         self.finish(form)
+
+    def convert_rate_period(self, period):
+        if period == self._period:
+            return
+        value = self.rate.value()
+        if self._period == "per year" and period == "per month":
+            self.rate.setValue(value / 12)
+        elif self._period == "per month" and period == "per year":
+            self.rate.setValue(value * 12)
+        self._period = period
+
+    def annual_rate(self):
+        if not self.rate.value():
+            return None
+        fraction = Decimal(str(self.rate.value())) / Decimal("100")
+        if self.rate_period.currentText() == "per month":
+            return fraction * Decimal("12")
+        return fraction
+
+    def set_annual_rate(self, annual):
+        self.rate_period.blockSignals(True)
+        self.rate_period.setCurrentText("per year")
+        self._period = "per year"
+        self.rate_period.blockSignals(False)
+        self.rate.setValue(float((annual or 0) * 100))
 
 
 class CrudPage(QWidget):
@@ -235,8 +373,7 @@ class IncomePage(CrudPage):
         self.action_row(box, "Add income", self.add)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Name", "Amount", "Schedule", "Next date", "Destination", "Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        configure_table(self.table)
         box.addWidget(self.table)
 
     def add(self):
@@ -270,6 +407,7 @@ class IncomePage(CrudPage):
                     if col == 0:
                         cell.setData(256, item.id)
                     self.table.setItem(row, col, cell)
+            fit_table_columns(self.table)
 
 
 class ExpensePage(CrudPage):
@@ -281,8 +419,7 @@ class ExpensePage(CrudPage):
         self.action_row(box, "Add expense", self.add)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["Name", "Amount", "Category", "Priority", "Schedule", "Next date", "Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        configure_table(self.table)
         box.addWidget(self.table)
 
     def add(self):
@@ -303,7 +440,8 @@ class ExpensePage(CrudPage):
                 name=dialog.name.text().strip(), amount=Decimal(str(dialog.amount.value())),
                 currency=dialog.currency.currentText(), schedule_id=schedule.id,
                 category_id=category.id if category else None, priority=dialog.priority.currentText(),
-                payment_account_id=dialog.account.currentData(),
+                payment_account_id=payment_method_ids(dialog.account)[0],
+                payment_debt_id=payment_method_ids(dialog.account)[1],
             ))
         self.refresh()
         self.changed.emit()
@@ -324,6 +462,7 @@ class ExpensePage(CrudPage):
                     if col == 0:
                         cell.setData(256, item.id)
                     self.table.setItem(row, col, cell)
+            fit_table_columns(self.table)
 
 
 class DebtPage(CrudPage):
@@ -338,8 +477,7 @@ class DebtPage(CrudPage):
         self.action_row(box, "Add debt", self.add)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["Name", "Type", "Balance", "Rate", "Minimum", "Schedule", "Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        configure_table(self.table)
         box.addWidget(self.table)
 
     def add(self):
@@ -353,7 +491,7 @@ class DebtPage(CrudPage):
             session.add(Debt(
                 name=dialog.name.text().strip(), debt_type=dialog.kind.currentText(),
                 current_balance=Decimal(str(dialog.balance.value())), currency=dialog.currency.currentText(),
-                interest_rate=Decimal(str(dialog.rate.value())) / Decimal("100") if dialog.rate.value() else None,
+                interest_rate=dialog.annual_rate(),
                 minimum_payment=Decimal(str(dialog.payment.value())), payment_schedule_id=schedule.id,
                 payment_account_id=dialog.account.currentData(),
             ))
@@ -369,7 +507,7 @@ class DebtPage(CrudPage):
             for row, item in enumerate(items):
                 schedule = session.get(Schedule, item.payment_schedule_id) if item.payment_schedule_id else None
                 values = (item.name, item.debt_type.replace("_", " ").title(), format_money(item.current_balance, item.currency),
-                          f"{item.interest_rate * 100:.2f}%" if item.interest_rate is not None else "—",
+                          f"{item.interest_rate * 100:.2f}% / yr" if item.interest_rate is not None else "—",
                           format_money(item.minimum_payment or Decimal('0'), item.currency),
                           ScheduleFields.describe(schedule) if schedule else "—", "Active" if item.active else "Disabled")
                 for col, value in enumerate(values):
@@ -377,6 +515,7 @@ class DebtPage(CrudPage):
                     if col == 0:
                         cell.setData(256, item.id)
                     self.table.setItem(row, col, cell)
+            fit_table_columns(self.table)
 
 
 class InvestmentAccountDialog(BaseDialog):
@@ -419,7 +558,31 @@ class HoldingDialog(BaseDialog):
                              ("Asset type", self.asset), ("Quantity", self.quantity), ("Price", self.price),
                              ("Quote currency", self.currency), ("Price date", self.price_date)):
             form.addRow(label, field)
+        fetch = QPushButton("Fetch quote")
+        fetch.clicked.connect(self.fetch_quote)
+        form.addRow(fetch)
         self.finish(form)
+
+    def fetch_quote(self):
+        symbol = self.symbol.text().strip().upper()
+        if not symbol:
+            QMessageBox.warning(self, "Symbol required", "Enter a ticker such as AAPL or VFV.TO.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            price, currency, price_date = download_quote(symbol)
+        except MarketDataError as exc:
+            QMessageBox.warning(self, "Quote unavailable", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.symbol.setText(symbol)
+        if not self.name.text().strip():
+            self.name.setText(symbol)
+        self.price.setValue(float(price))
+        if self.currency.findText(currency) >= 0:
+            self.currency.setCurrentText(currency)
+        self.price_date.setDate(QDate(price_date.year, price_date.month, price_date.day))
 
     def validate(self):
         if self.account.currentData() is None or not self.symbol.text().strip():
@@ -448,8 +611,7 @@ class InvestmentPage(QWidget):
         box.addLayout(row)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Account", "Type", "Symbol", "Units", "Latest price", "Reporting value"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        configure_table(self.table)
         box.addWidget(self.table)
 
     def add_account(self):
@@ -473,8 +635,8 @@ class InvestmentPage(QWidget):
                 name=dialog.name.text().strip(), asset_type=dialog.asset.currentText(),
                 quantity=Decimal(str(dialog.quantity.value())), quote_currency=dialog.currency.currentText(),
             ))
-            session.add(SecurityPrice(symbol=symbol, price=Decimal(str(dialog.price.value())),
-                                      currency=dialog.currency.currentText(), price_date=dialog.price_date.date().toPython()))
+            upsert_price(session, symbol, Decimal(str(dialog.price.value())),
+                         dialog.currency.currentText(), dialog.price_date.date().toPython())
         self.refresh()
         self.changed.emit()
 
@@ -504,6 +666,7 @@ class InvestmentPage(QWidget):
                               format_money(price.price, price.currency) if price else "Missing", report)
                 for col, value in enumerate(values):
                     self.table.setItem(row, col, QTableWidgetItem(value))
+            fit_table_columns(self.table)
 
 
 class SettingsPage(QWidget):
@@ -525,6 +688,30 @@ class SettingsPage(QWidget):
         form.addRow("Cash reserve", self.reserve)
         form.addRow("Theme", self.theme)
         box.addLayout(form)
+        box.addWidget(QLabel("USD / CAD"))
+        self.fx_status = QLabel("No USD/CAD rate saved yet.")
+        self.fx_status.setObjectName("muted")
+        box.addWidget(self.fx_status)
+        fx_form = QFormLayout()
+        self.fx_rate = QDoubleSpinBox()
+        self.fx_rate.setDecimals(4)
+        self.fx_rate.setRange(0.0001, 10)
+        self.fx_rate.setSingleStep(0.0001)
+        self.fx_rate.setValue(1.35)
+        self.fx_date = QDateEdit(QDate.currentDate())
+        self.fx_date.setCalendarPopup(True)
+        fx_form.addRow("CAD per 1 USD", self.fx_rate)
+        fx_form.addRow("Rate date", self.fx_date)
+        box.addLayout(fx_form)
+        fx_row = QHBoxLayout()
+        save_fx = QPushButton("Save USD/CAD rate")
+        save_fx.clicked.connect(self.save_fx)
+        fetch_fx = QPushButton("Fetch Bank of Canada rate")
+        fetch_fx.clicked.connect(self.fetch_fx)
+        fx_row.addWidget(fetch_fx)
+        fx_row.addStretch()
+        fx_row.addWidget(save_fx)
+        box.addLayout(fx_row)
         row = QHBoxLayout()
         save = QPushButton("Save settings")
         save.setObjectName("primary")
@@ -547,6 +734,14 @@ class SettingsPage(QWidget):
         self.days.setCurrentText(values.get("default_projection_days", "30"))
         self.reserve.setValue(float(values.get("cash_reserve_amount", "0")))
         self.theme.setCurrentText(values.get("theme", "system"))
+        with session_scope() as session:
+            rate = latest_rate(session)
+        if rate is None:
+            self.fx_status.setText("No USD/CAD rate saved yet. Fetch one or enter CAD per 1 USD.")
+        else:
+            self.fx_status.setText(f"Latest saved: 1 USD = {rate.rate} CAD on {rate.rate_date.isoformat()} ({rate.source})")
+            self.fx_rate.setValue(float(rate.rate))
+            self.fx_date.setDate(QDate(rate.rate_date.year, rate.rate_date.month, rate.rate_date.day))
 
     def save(self):
         values = {
@@ -564,6 +759,29 @@ class SettingsPage(QWidget):
                     setting.value = value
         self.changed.emit()
         QMessageBox.information(self, "Saved", "Settings were saved.")
+
+    def save_fx(self):
+        with session_scope() as session:
+            upsert_rate(session, "USD", "CAD", Decimal(str(self.fx_rate.value())),
+                        self.fx_date.date().toPython(), "manual")
+        self.refresh()
+        self.changed.emit()
+        QMessageBox.information(self, "Saved", "USD/CAD rate was saved.")
+
+    def fetch_fx(self):
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            rate, rate_date = fetch_usd_cad()
+        except MarketDataError as exc:
+            QMessageBox.warning(self, "Rate unavailable", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        with session_scope() as session:
+            upsert_rate(session, "USD", "CAD", rate, rate_date, "api")
+        self.refresh()
+        self.changed.emit()
+        QMessageBox.information(self, "Fetched", f"Saved Bank of Canada rate: 1 USD = {rate} CAD on {rate_date.isoformat()}.")
 
     def backup(self):
         suggested = f"finance-backup-{date.today().isoformat()}.db"

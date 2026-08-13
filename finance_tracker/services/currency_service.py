@@ -31,3 +31,27 @@ def convert(amount: Decimal, source: str, target: str, session: Session, rate_da
         return amount * rate.rate
     return amount / rate.rate
 
+
+def latest_rate(session: Session, base: str = "USD", quote: str = "CAD") -> ExchangeRate | None:
+    return session.scalar(select(ExchangeRate).where(
+        or_(
+            (ExchangeRate.base_currency == base) & (ExchangeRate.quote_currency == quote),
+            (ExchangeRate.base_currency == quote) & (ExchangeRate.quote_currency == base),
+        )
+    ).order_by(ExchangeRate.rate_date.desc(), ExchangeRate.created_at.desc()).limit(1))
+
+
+def upsert_rate(session: Session, base: str, quote: str, rate: Decimal, rate_date: date,
+                source: str = "manual") -> ExchangeRate:
+    existing = session.scalar(select(ExchangeRate).where(
+        ExchangeRate.base_currency == base, ExchangeRate.quote_currency == quote,
+        ExchangeRate.rate_date == rate_date, ExchangeRate.source == source,
+    ))
+    if existing is None:
+        existing = ExchangeRate(base_currency=base, quote_currency=quote, rate=rate,
+                                rate_date=rate_date, source=source)
+        session.add(existing)
+        return existing
+    existing.rate = rate
+    return existing
+

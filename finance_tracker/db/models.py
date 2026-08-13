@@ -142,6 +142,7 @@ class RecurringExpense(Base):
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     priority: Mapped[str] = mapped_column(String(24), default="important")
     payment_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    payment_debt_id: Mapped[int | None] = mapped_column(ForeignKey("debts.id"))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
@@ -183,6 +184,7 @@ class OneTimeEvent(Base):
     currency: Mapped[str] = mapped_column(ForeignKey("currencies.code"))
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    payment_debt_id: Mapped[int | None] = mapped_column(ForeignKey("debts.id"))
     event_type: Mapped[str] = mapped_column(String(16))
     notes: Mapped[str | None] = mapped_column(Text)
 

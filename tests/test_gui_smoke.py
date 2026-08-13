@@ -1,6 +1,9 @@
-from PySide6.QtWidgets import QApplication
+from decimal import Decimal
+
+from PySide6.QtWidgets import QApplication, QHeaderView, QPushButton, QTableWidget
 from finance_tracker.db.database import create_schema
-from finance_tracker.ui.main_window import MainWindow
+from finance_tracker.ui.domain_pages import DebtDialog, configure_table, fit_table_columns
+from finance_tracker.ui.main_window import AccountDialog, Accounts, MainWindow
 
 
 def test_main_window_constructs(engine):
@@ -8,5 +11,71 @@ def test_main_window_constructs(engine):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     assert window.windowTitle() == "Personal Finance Tracker"
-    assert window.stack.count() == 10
+    assert window.stack.count() == 11
+    assert "Outlook" in [button.text() for button in window.buttons]
     window.close()
+
+
+def test_table_columns_fit_header_text():
+    app = QApplication.instance() or QApplication([])
+    table = QTableWidget(0, 6)
+    table.setHorizontalHeaderLabels(["Name", "Type", "Balance", "Overdraft limit", "Rate", "Headroom"])
+    configure_table(table)
+    table.resize(1000, 240)
+    table.show()
+    app.processEvents()
+    fit_table_columns(table)
+    header = table.horizontalHeader()
+    assert header.stretchLastSection() is False
+    assert header.sectionResizeMode(0) != QHeaderView.ResizeMode.Stretch
+    assert table.columnWidth(3) > table.columnWidth(0)
+    assert table.columnWidth(3) >= header.fontMetrics().horizontalAdvance("Overdraft limit")
+    table.close()
+
+
+def test_account_dialog_omits_credit_card_and_overdraft_for_savings():
+    app = QApplication.instance() or QApplication([])
+    dialog = AccountDialog()
+    types = [dialog.kind.itemText(i) for i in range(dialog.kind.count())]
+    assert types == ["checking", "savings", "cash", "other"]
+    dialog.name.setText("TFSA cash")
+    dialog.kind.setCurrentText("savings")
+    dialog.limit.setValue(500)
+    dialog.rate.setValue(19.99)
+    values = dialog.values()
+    assert values["overdraft_limit"] is None
+    assert values["overdraft_interest_rate"] is None
+    dialog.kind.setCurrentText("checking")
+    values = dialog.values()
+    assert values["overdraft_limit"] == Decimal("500")
+    assert values["overdraft_interest_rate"] is not None
+    dialog.close()
+
+
+def test_accounts_page_uses_toolbar_not_cell_buttons(engine):
+    create_schema(engine)
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    page = next(item for item in window.pages if isinstance(item, Accounts))
+    assert page.table.columnCount() == 6
+    labels = [child.text() for child in page.findChildren(QPushButton)]
+    assert "Edit" in labels
+    assert "Delete" in labels
+    for row in range(page.table.rowCount()):
+        for col in range(page.table.columnCount()):
+            assert page.table.cellWidget(row, col) is None
+    window.close()
+
+
+def test_debt_dialog_monthly_rate_converts_to_annual():
+    app = QApplication.instance() or QApplication([])
+    dialog = DebtDialog()
+    dialog.rate_period.setCurrentText("per month")
+    dialog.rate.setValue(0.5)
+    assert dialog.annual_rate() == Decimal("0.06")
+    dialog.set_annual_rate(Decimal("0.0699"))
+    assert dialog.rate_period.currentText() == "per year"
+    assert abs(dialog.rate.value() - 6.99) < 0.0001
+    dialog.rate_period.setCurrentText("per month")
+    assert abs(dialog.rate.value() - 6.99 / 12) < 0.0001
+    dialog.close()

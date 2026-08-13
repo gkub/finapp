@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from finance_tracker.db.models import InvestmentAccount, InvestmentHolding, SecurityPrice
-from finance_tracker.services.currency_service import convert
+from finance_tracker.services.currency_service import RateUnavailable, convert
 
 
 class PriceUnavailable(LookupError):
@@ -34,6 +34,20 @@ def latest_price(session: Session, symbol: str, on_date: date | None = None) -> 
     return price
 
 
+def upsert_price(session: Session, symbol: str, price: Decimal, currency: str, price_date: date,
+                 source: str = "manual") -> SecurityPrice:
+    existing = session.scalar(select(SecurityPrice).where(
+        SecurityPrice.symbol == symbol, SecurityPrice.price_date == price_date, SecurityPrice.source == source,
+    ))
+    if existing is None:
+        existing = SecurityPrice(symbol=symbol, price=price, currency=currency, price_date=price_date, source=source)
+        session.add(existing)
+        return existing
+    existing.price = price
+    existing.currency = currency
+    return existing
+
+
 def value_holding(session: Session, holding: InvestmentHolding, reporting_currency: str = "CAD",
                   on_date: date | None = None) -> HoldingValue:
     price = latest_price(session, holding.symbol, on_date)
@@ -47,5 +61,10 @@ def value_account(session: Session, account: InvestmentAccount, reporting_curren
     total = convert(account.cash_balance, account.cash_currency, reporting_currency, session, on_date)
     holdings = session.scalars(select(InvestmentHolding).where(
         InvestmentHolding.investment_account_id == account.id, InvestmentHolding.active.is_(True))).all()
-    return total + sum((value_holding(session, item, reporting_currency, on_date).reporting_value for item in holdings), Decimal("0"))
+    for item in holdings:
+        try:
+            total += value_holding(session, item, reporting_currency, on_date).reporting_value
+        except (PriceUnavailable, RateUnavailable):
+            continue
+    return total
 

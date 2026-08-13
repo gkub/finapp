@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from PySide6.QtCore import QDate, Signal
+from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
-    QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QAbstractItemView, QApplication, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
+    QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 from sqlalchemy import delete, select
@@ -16,13 +16,16 @@ from finance_tracker.db.database import session_scope
 from finance_tracker.db.models import (
     Account, Category, Debt, DebtSnapshot, IncomeSource, InvestmentAccount,
     InvestmentHolding, InvestmentSnapshot, OneTimeEvent, RecurringExpense,
-    Schedule, SecurityPrice,
+    Schedule,
 )
-from finance_tracker.services.investment_service import PriceUnavailable, latest_price, value_holding
+from finance_tracker.services.currency_service import upsert_rate
+from finance_tracker.services.investment_service import PriceUnavailable, latest_price, upsert_price, value_holding
+from finance_tracker.services.market_data import MarketDataError, fetch_quote as download_quote, fetch_usd_cad
 from finance_tracker.services.schedule_service import occurrences
 from finance_tracker.ui.domain_pages import (
     DebtDialog, ExpenseDialog, HoldingDialog, IncomeDialog, InvestmentAccountDialog,
-    ScheduleFields, account_choices, money_spin, titled_page,
+    ScheduleFields, configure_table, fit_table_columns, money_spin,
+    payment_method_choices, payment_method_ids, payment_method_label, set_payment_method, titled_page,
 )
 from finance_tracker.utils.money import format_money
 
@@ -130,9 +133,8 @@ class ManagedIncomePage(ManagedPage):
         self.controls(box, self.add, self.edit, lambda: self.delete_record("this income source"))
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Name", "Amount", "Schedule", "Next date", "Destination", "Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.doubleClicked.connect(self.edit)
         box.addWidget(self.table)
 
@@ -192,6 +194,7 @@ class ManagedIncomePage(ManagedPage):
                     if col == 0:
                         cell.setData(256, item.id)
                     self.table.setItem(row, col, cell)
+            fit_table_columns(self.table)
 
 
 class ManagedExpensePage(ManagedPage):
@@ -199,13 +202,17 @@ class ManagedExpensePage(ManagedPage):
 
     def __init__(self):
         super().__init__()
-        box = titled_page(self, "Recurring Expenses", "Manage exact bill schedules and user-defined priorities.")
+        box = titled_page(
+            self, "Recurring Expenses",
+            "Bank-paid bills hit cash flow. Charges to a credit card wait until you pay the card.",
+        )
         self.controls(box, self.add, self.edit, lambda: self.delete_record("this recurring expense"))
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Name", "Amount", "Category", "Priority", "Schedule", "Next date", "Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(
+            ["Name", "Amount", "Category", "Priority", "Paid from", "Schedule", "Next date", "Status"]
+        )
+        configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.doubleClicked.connect(self.edit)
         box.addWidget(self.table)
 
@@ -228,11 +235,12 @@ class ManagedExpensePage(ManagedPage):
             session.add(schedule)
             category = self.category(session, dialog.category.text().strip())
             session.flush()
+            account_id, debt_id = payment_method_ids(dialog.account)
             session.add(RecurringExpense(
                 name=dialog.name.text().strip(), amount=Decimal(str(dialog.amount.value())),
                 currency=dialog.currency.currentText(), schedule_id=schedule.id,
                 category_id=category.id if category else None, priority=dialog.priority.currentText(),
-                payment_account_id=dialog.account.currentData(),
+                payment_account_id=account_id, payment_debt_id=debt_id,
             ))
         self.refresh()
         self.changed.emit()
@@ -252,7 +260,7 @@ class ManagedExpensePage(ManagedPage):
             dialog.currency.setCurrentText(item.currency)
             dialog.category.setText(category.name if category else "")
             dialog.priority.setCurrentText(item.priority)
-            set_combo_data(dialog.account, item.payment_account_id)
+            set_payment_method(dialog.account, item.payment_account_id, item.payment_debt_id)
             fill_schedule(dialog.schedule, schedule)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
@@ -262,7 +270,7 @@ class ManagedExpensePage(ManagedPage):
             category = self.category(session, dialog.category.text().strip())
             item.category_id = category.id if category else None
             item.priority = dialog.priority.currentText()
-            item.payment_account_id = dialog.account.currentData()
+            item.payment_account_id, item.payment_debt_id = payment_method_ids(dialog.account)
             apply_schedule(schedule, dialog.schedule)
         self.refresh()
         self.changed.emit()
@@ -276,13 +284,16 @@ class ManagedExpensePage(ManagedPage):
                 category = session.get(Category, item.category_id) if item.category_id else None
                 dates = occurrences(schedule, date.today(), date.today().replace(year=date.today().year + 2))
                 values = (item.name, format_money(item.amount, item.currency), category.name if category else "—",
-                          item.priority.title(), ScheduleFields.describe(schedule),
+                          item.priority.title(),
+                          payment_method_label(session, item.payment_account_id, item.payment_debt_id),
+                          ScheduleFields.describe(schedule),
                           dates[0].isoformat() if dates else "—", "Active" if item.active else "Disabled")
                 for col, value in enumerate(values):
                     cell = QTableWidgetItem(value)
                     if col == 0:
                         cell.setData(256, item.id)
                     self.table.setItem(row, col, cell)
+            fit_table_columns(self.table)
 
 
 class ManagedDebtPage(ManagedPage):
@@ -290,16 +301,15 @@ class ManagedDebtPage(ManagedPage):
 
     def __init__(self):
         super().__init__()
-        box = titled_page(self, "Debts", "Edit balances and repayment terms or preserve them by disabling.")
+        box = titled_page(self, "Debts", "Credit cards are debts. Charge expenses to the card; pay the statement from a bank account.")
         self.total = QLabel()
         self.total.setObjectName("metric")
         box.addWidget(self.total)
         self.controls(box, self.add, self.edit, lambda: self.delete_record("this debt and its snapshots"))
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["Name", "Type", "Balance", "Rate", "Minimum", "Schedule", "Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.doubleClicked.connect(self.edit)
         box.addWidget(self.table)
 
@@ -314,7 +324,7 @@ class ManagedDebtPage(ManagedPage):
             session.add(Debt(
                 name=dialog.name.text().strip(), debt_type=dialog.kind.currentText(),
                 current_balance=Decimal(str(dialog.balance.value())), currency=dialog.currency.currentText(),
-                interest_rate=Decimal(str(dialog.rate.value())) / Decimal("100") if dialog.rate.value() else None,
+                interest_rate=dialog.annual_rate(),
                 minimum_payment=Decimal(str(dialog.payment.value())),
                 payment_schedule_id=schedule.id, payment_account_id=dialog.account.currentData(),
             ))
@@ -334,7 +344,7 @@ class ManagedDebtPage(ManagedPage):
             dialog.kind.setCurrentText(item.debt_type)
             dialog.balance.setValue(float(item.current_balance))
             dialog.currency.setCurrentText(item.currency)
-            dialog.rate.setValue(float((item.interest_rate or 0) * 100))
+            dialog.set_annual_rate(item.interest_rate)
             dialog.payment.setValue(float(item.minimum_payment or 0))
             set_combo_data(dialog.account, item.payment_account_id)
             fill_schedule(dialog.schedule, schedule)
@@ -344,7 +354,7 @@ class ManagedDebtPage(ManagedPage):
             item.debt_type = dialog.kind.currentText()
             item.current_balance = Decimal(str(dialog.balance.value()))
             item.currency = dialog.currency.currentText()
-            item.interest_rate = Decimal(str(dialog.rate.value())) / Decimal("100") if dialog.rate.value() else None
+            item.interest_rate = dialog.annual_rate()
             item.minimum_payment = Decimal(str(dialog.payment.value()))
             item.payment_account_id = dialog.account.currentData()
             apply_schedule(schedule, dialog.schedule)
@@ -371,7 +381,7 @@ class ManagedDebtPage(ManagedPage):
                 schedule = session.get(Schedule, item.payment_schedule_id) if item.payment_schedule_id else None
                 values = (item.name, item.debt_type.replace("_", " ").title(),
                           format_money(item.current_balance, item.currency),
-                          f"{item.interest_rate * 100:.2f}%" if item.interest_rate is not None else "—",
+                          f"{item.interest_rate * 100:.2f}% / yr" if item.interest_rate is not None else "—",
                           format_money(item.minimum_payment or Decimal("0"), item.currency),
                           ScheduleFields.describe(schedule) if schedule else "—",
                           "Active" if item.active else "Disabled")
@@ -380,6 +390,7 @@ class ManagedDebtPage(ManagedPage):
                     if col == 0:
                         cell.setData(256, item.id)
                     self.table.setItem(row, col, cell)
+            fit_table_columns(self.table)
 
 
 class EventDialog(QDialog):
@@ -396,15 +407,15 @@ class EventDialog(QDialog):
         self.on_date = QDateEdit(QDate.currentDate())
         self.on_date.setCalendarPopup(True)
         self.account = QComboBox()
-        account_choices(self.account)
+        payment_method_choices(self.account)
         if event:
             self.kind.setCurrentText(event.event_type)
             self.amount.setValue(float(event.amount))
             self.currency.setCurrentText(event.currency)
             self.on_date.setDate(QDate(event.event_date.year, event.event_date.month, event.event_date.day))
-            set_combo_data(self.account, event.account_id)
+            set_payment_method(self.account, event.account_id, event.payment_debt_id)
         for label, field in (("Name", self.name), ("Type", self.kind), ("Amount", self.amount),
-                             ("Currency", self.currency), ("Date", self.on_date), ("Account", self.account)):
+                             ("Currency", self.currency), ("Date", self.on_date), ("Paid from / charged to", self.account)):
             form.addRow(label, field)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -417,7 +428,7 @@ class EventPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        box = titled_page(self, "One-Time Events", "Future income and expenses that occur on one exact date.")
+        box = titled_page(self, "One-Time Events", "Bank-paid events hit cash flow. Card charges wait until you pay the card.")
         row = QHBoxLayout()
         row.addStretch()
         edit = QPushButton("Edit")
@@ -431,10 +442,9 @@ class EventPage(QWidget):
             row.addWidget(button)
         box.addLayout(row)
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Name", "Date", "Type", "Amount", "Account"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.setHorizontalHeaderLabels(["Name", "Date", "Type", "Amount", "Paid from"])
+        configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.doubleClicked.connect(self.edit)
         box.addWidget(self.table)
 
@@ -445,9 +455,11 @@ class EventPage(QWidget):
         if not dialog.name.text().strip():
             QMessageBox.warning(self, "Name required", "Enter an event name.")
             return False
+        account_id, debt_id = payment_method_ids(dialog.account)
         values = dict(name=dialog.name.text().strip(), event_type=dialog.kind.currentText(),
                       amount=Decimal(str(dialog.amount.value())), currency=dialog.currency.currentText(),
-                      event_date=dialog.on_date.date().toPython(), account_id=dialog.account.currentData())
+                      event_date=dialog.on_date.date().toPython(), account_id=account_id,
+                      payment_debt_id=debt_id)
         if event is None:
             with session_scope() as session:
                 session.add(OneTimeEvent(**values))
@@ -488,14 +500,15 @@ class EventPage(QWidget):
             items = session.scalars(select(OneTimeEvent).order_by(OneTimeEvent.event_date)).all()
             self.table.setRowCount(len(items))
             for row, item in enumerate(items):
-                account = session.get(Account, item.account_id) if item.account_id else None
                 values = (item.name, item.event_date.isoformat(), item.event_type.title(),
-                          format_money(item.amount, item.currency), account.name if account else "—")
+                          format_money(item.amount, item.currency),
+                          payment_method_label(session, item.account_id, item.payment_debt_id))
                 for col, value in enumerate(values):
                     cell = QTableWidgetItem(value)
                     if col == 0:
                         cell.setData(256, item.id)
                     self.table.setItem(row, col, cell)
+            fit_table_columns(self.table)
 
 
 class InvestmentManagementPage(QWidget):
@@ -503,7 +516,7 @@ class InvestmentManagementPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        box = titled_page(self, "Investments", "Manage accounts, holdings, quantities, and manual prices.")
+        box = titled_page(self, "Investments", "Manual prices, or fetch quotes and USD/CAD when you are online.")
         account_row = QHBoxLayout()
         account_row.addWidget(QLabel("Investment accounts"))
         account_row.addStretch()
@@ -514,13 +527,15 @@ class InvestmentManagementPage(QWidget):
         box.addLayout(account_row)
         self.accounts = QTableWidget(0, 4)
         self.accounts.setHorizontalHeaderLabels(["Name", "Type", "Cash", "Status"])
-        self.accounts.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        configure_table(self.accounts)
         self.accounts.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.accounts.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         box.addWidget(self.accounts)
         holding_row = QHBoxLayout()
         holding_row.addWidget(QLabel("Holdings"))
         holding_row.addStretch()
+        fetch = QPushButton("Fetch quotes & FX")
+        fetch.clicked.connect(self.fetch_market_data)
+        holding_row.addWidget(fetch)
         for text, handler in (("Edit holding / price", self.edit_holding), ("Delete holding", self.delete_holding), ("Add holding", self.add_holding)):
             button = QPushButton(text)
             if text == "Add holding":
@@ -530,9 +545,8 @@ class InvestmentManagementPage(QWidget):
         box.addLayout(holding_row)
         self.holdings = QTableWidget(0, 6)
         self.holdings.setHorizontalHeaderLabels(["Symbol", "Account", "Units", "Price", "Native value", "CAD value"])
-        self.holdings.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        configure_table(self.holdings)
         self.holdings.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.holdings.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         box.addWidget(self.holdings)
 
     def add_account(self):
@@ -589,9 +603,8 @@ class InvestmentManagementPage(QWidget):
                 name=dialog.name.text().strip(), asset_type=dialog.asset.currentText(),
                 quantity=Decimal(str(dialog.quantity.value())), quote_currency=dialog.currency.currentText(),
             ))
-            session.add(SecurityPrice(symbol=symbol, price=Decimal(str(dialog.price.value())),
-                                      currency=dialog.currency.currentText(),
-                                      price_date=dialog.price_date.date().toPython()))
+            upsert_price(session, symbol, Decimal(str(dialog.price.value())),
+                         dialog.currency.currentText(), dialog.price_date.date().toPython())
         self.refresh()
         self.changed.emit()
 
@@ -601,29 +614,66 @@ class InvestmentManagementPage(QWidget):
             return
         with session_scope() as session:
             holding = session.get(InvestmentHolding, ident)
-            price = latest_price(session, holding.symbol)
-            dialog = HoldingDialog(self)
-            dialog.setWindowTitle("Edit holding and add current price")
-            set_combo_data(dialog.account, holding.investment_account_id)
-            dialog.symbol.setText(holding.symbol)
-            dialog.name.setText(holding.name)
-            dialog.asset.setCurrentText(holding.asset_type)
-            dialog.quantity.setValue(float(holding.quantity))
-            dialog.price.setValue(float(price.price))
-            dialog.currency.setCurrentText(price.currency)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
+            try:
+                price = latest_price(session, holding.symbol)
+                price_value, price_currency = float(price.price), price.currency
+            except PriceUnavailable:
+                price_value, price_currency = 0.0, holding.quote_currency
+            snapshot = dict(
+                account_id=holding.investment_account_id, symbol=holding.symbol, name=holding.name,
+                asset_type=holding.asset_type, quantity=float(holding.quantity),
+                price=price_value, currency=price_currency,
+            )
+        dialog = HoldingDialog(self)
+        dialog.setWindowTitle("Edit holding and add current price")
+        set_combo_data(dialog.account, snapshot["account_id"])
+        dialog.symbol.setText(snapshot["symbol"])
+        dialog.name.setText(snapshot["name"])
+        dialog.asset.setCurrentText(snapshot["asset_type"])
+        dialog.quantity.setValue(snapshot["quantity"])
+        dialog.price.setValue(snapshot["price"])
+        dialog.currency.setCurrentText(snapshot["currency"])
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        with session_scope() as session:
+            holding = session.get(InvestmentHolding, ident)
             holding.investment_account_id = dialog.account.currentData()
             holding.symbol = dialog.symbol.text().strip().upper()
             holding.name = dialog.name.text().strip()
             holding.asset_type = dialog.asset.currentText()
             holding.quantity = Decimal(str(dialog.quantity.value()))
             holding.quote_currency = dialog.currency.currentText()
-            session.add(SecurityPrice(symbol=holding.symbol, price=Decimal(str(dialog.price.value())),
-                                      currency=dialog.currency.currentText(),
-                                      price_date=dialog.price_date.date().toPython()))
+            upsert_price(session, holding.symbol, Decimal(str(dialog.price.value())),
+                         dialog.currency.currentText(), dialog.price_date.date().toPython())
         self.refresh()
         self.changed.emit()
+
+    def fetch_market_data(self):
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        notes = []
+        try:
+            try:
+                rate, rate_date = fetch_usd_cad()
+                with session_scope() as session:
+                    upsert_rate(session, "USD", "CAD", rate, rate_date, "api")
+                notes.append(f"USD/CAD {rate} on {rate_date.isoformat()}")
+            except MarketDataError as exc:
+                notes.append(f"USD/CAD: {exc}")
+            with session_scope() as session:
+                symbols = sorted({item.symbol for item in session.scalars(select(InvestmentHolding).where(InvestmentHolding.active.is_(True)))})
+            for symbol in symbols:
+                try:
+                    price, currency, price_date = download_quote(symbol)
+                    with session_scope() as session:
+                        upsert_price(session, symbol, price, currency, price_date, "api")
+                    notes.append(f"{symbol}: {price} {currency}")
+                except MarketDataError as exc:
+                    notes.append(f"{symbol}: {exc}")
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.refresh()
+        self.changed.emit()
+        QMessageBox.information(self, "Market data", "\n".join(notes) if notes else "No holdings to update.")
 
     def delete_holding(self):
         ident = selected_id(self.holdings)
@@ -665,3 +715,5 @@ class InvestmentManagementPage(QWidget):
                     if col == 0:
                         cell.setData(256, holding.id)
                     self.holdings.setItem(row, col, cell)
+            fit_table_columns(self.accounts)
+            fit_table_columns(self.holdings)

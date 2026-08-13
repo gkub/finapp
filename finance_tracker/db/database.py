@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -45,7 +45,25 @@ def get_engine() -> Engine:
 
 
 def create_schema(engine: Engine | None = None) -> None:
-    Base.metadata.create_all(engine or get_engine())
+    target = engine or get_engine()
+    Base.metadata.create_all(target)
+    _add_missing_columns(target)
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    statements = (
+        ("recurring_expenses", "payment_debt_id", "INTEGER REFERENCES debts(id)"),
+        ("one_time_events", "payment_debt_id", "INTEGER REFERENCES debts(id)"),
+    )
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        tables = set(inspector.get_table_names())
+        for table, column, ddl in statements:
+            if table not in tables:
+                continue
+            existing = {item["name"] for item in inspector.get_columns(table)}
+            if column not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
 
 
 @contextmanager

@@ -22,3 +22,12 @@ def format_money(value: Decimal, currency: str = "CAD") -> str:
     suffix = "" if prefix else f" {currency}"
     return f"{sign}{prefix}{absolute:,.2f}{suffix}"
 
+
+def format_signed(value: Decimal, currency: str = "CAD") -> str:
+    text = format_money(abs(value), currency)
+    if value > 0:
+        return f"+{text}"
+    if value < 0:
+        return f"-{text}"
+    return text
+
