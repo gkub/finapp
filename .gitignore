@@ -1,0 +1,45 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local databases, sidecars, exports, and backups
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+finance-backup-*.db
+exports/
+
+# Logs and temporary files
+*.log
+*.tmp
+.cache/
