@@ -52,7 +52,6 @@ def titled_page(widget, title, subtitle):
     note = QLabel(subtitle)
     note.setObjectName("muted")
     note.setWordWrap(True)
-    note.setWordWrap(True)
     box.addWidget(heading)
     box.addWidget(note)
     return box
@@ -114,6 +113,15 @@ def account_choices(combo, include_blank=True):
             combo.addItem(account.name, account.id)
 
 
+def debt_choices(combo, include_blank=True):
+    combo.clear()
+    if include_blank:
+        combo.addItem("None", None)
+    with session_scope() as session:
+        for debt in session.scalars(select(Debt).where(Debt.active.is_(True)).order_by(Debt.name)):
+            combo.addItem(debt.name, debt.id)
+
+
 def payment_method_choices(combo, include_blank=True):
     combo.clear()
     if include_blank:
@@ -157,6 +165,54 @@ def payment_method_label(session, account_id=None, debt_id=None):
     if debt_id:
         debt = session.get(Debt, debt_id)
         return f"{debt.name} (card)" if debt else "—"
+    if account_id:
+        account = session.get(Account, account_id)
+        return account.name if account else "—"
+    return "—"
+
+
+def destination_choices(combo, include_blank=False):
+    combo.clear()
+    if include_blank:
+        combo.addItem("None", None)
+    with session_scope() as session:
+        for account in session.scalars(select(Account).where(Account.active.is_(True)).order_by(Account.name)):
+            combo.addItem(account.name, f"account:{account.id}")
+        for item in session.scalars(
+            select(InvestmentAccount).where(InvestmentAccount.active.is_(True)).order_by(InvestmentAccount.name)
+        ):
+            combo.addItem(f"{item.name} ({item.account_type.upper()})", f"investment:{item.id}")
+
+
+def destination_ids(combo):
+    data = combo.currentData()
+    if not data:
+        return None, None
+    kind, _, ident = data.partition(":")
+    if not ident:
+        return None, None
+    value = int(ident)
+    if kind == "investment":
+        return None, value
+    return value, None
+
+
+def set_destination(combo, account_id=None, investment_id=None):
+    if investment_id:
+        target = f"investment:{investment_id}"
+    elif account_id:
+        target = f"account:{account_id}"
+    else:
+        target = None
+    index = combo.findData(target)
+    if index >= 0:
+        combo.setCurrentIndex(index)
+
+
+def destination_label(session, account_id=None, investment_id=None):
+    if investment_id:
+        item = session.get(InvestmentAccount, investment_id)
+        return f"{item.name} ({item.account_type.upper()})" if item else "—"
     if account_id:
         account = session.get(Account, account_id)
         return account.name if account else "—"
@@ -250,6 +306,55 @@ class IncomeDialog(BaseDialog):
         self.finish(form)
 
 
+class DepositDialog(BaseDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add deposit")
+        self.setMinimumWidth(430)
+        form = QFormLayout(self)
+        self.name = QLineEdit()
+        self.amount = money_spin()
+        self.currency = QComboBox()
+        self.currency.addItems(["CAD", "USD"])
+        self.source = QComboBox()
+        account_choices(self.source)
+        if self.source.count():
+            self.source.setItemText(0, "New money")
+        self.destination = QComboBox()
+        destination_choices(self.destination)
+        form.addRow("Name", self.name)
+        form.addRow("Amount", self.amount)
+        form.addRow("Currency", self.currency)
+        form.addRow("From", self.source)
+        form.addRow("To", self.destination)
+        self.schedule = ScheduleFields(form)
+        self.finish(form)
+
+
+class MaterialAssetDialog(BaseDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add asset")
+        self.setMinimumWidth(430)
+        form = QFormLayout(self)
+        self.name = QLineEdit()
+        self.kind = QComboBox()
+        self.kind.addItems(["vehicle", "property", "electronics", "jewellery", "collectible", "other"])
+        self.value = money_spin()
+        self.currency = QComboBox()
+        self.currency.addItems(["CAD", "USD"])
+        self.net = QCheckBox()
+        self.net.setChecked(True)
+        self.notes = QLineEdit()
+        form.addRow("Name", self.name)
+        form.addRow("Type", self.kind)
+        form.addRow("Estimated value", self.value)
+        form.addRow("Currency", self.currency)
+        form.addRow("Include in net worth", self.net)
+        form.addRow("Notes", self.notes)
+        self.finish(form)
+
+
 class ExpenseDialog(BaseDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -304,7 +409,8 @@ class DebtDialog(BaseDialog):
                              ("Currency", self.currency)):
             form.addRow(label, field)
         form.addRow("Interest rate", rate_row)
-        form.addRow("Minimum payment", self.payment)
+        form.addRow("Scheduled payment", self.payment)
+        self.payment.setToolTip("Optional. Use for loans with a fixed bill. Leave $0 if you pay this down manually.")
         form.addRow("Paid from (bank)", self.account)
         self.schedule = ScheduleFields(form)
         self.finish(form)

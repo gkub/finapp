@@ -4,7 +4,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from finance_tracker.db.models import Account, BalanceSnapshot, Currency, Debt, InvestmentAccount, InvestmentHolding, SecurityPrice
+from finance_tracker.db.models import Account, BalanceSnapshot, Currency, Debt, InvestmentAccount, InvestmentHolding, MaterialAsset, SecurityPrice
 from finance_tracker.services.balance_service import (
     current_balance_sheet, estimated_overdraft_interest, overdraft_headroom, supports_overdraft, update_account_balance,
 )
@@ -26,6 +26,24 @@ def test_balance_sheet_keeps_cash_investments_and_debt_distinct(session: Session
     assert result.net_worth == Decimal("-40000.00000000000000")
     assert result.credit_cards == Decimal("0")
     assert result.debts == Decimal("70000")
+    assert result.material_assets == Decimal("0")
+
+
+def test_material_assets_count_in_net_worth(session: Session):
+    session.add(Currency(code="CAD", name="Canadian Dollar", symbol="$")); session.flush()
+    session.add(Account(name="Cash", account_type="checking", current_balance=Decimal("1000"), currency="CAD"))
+    session.add(MaterialAsset(
+        name="Civic", asset_type="vehicle", current_value=Decimal("8000"), currency="CAD", include_in_net_worth=True,
+    ))
+    session.add(MaterialAsset(
+        name="Old laptop", asset_type="electronics", current_value=Decimal("200"), currency="CAD",
+        include_in_net_worth=False,
+    ))
+    session.flush()
+    result = current_balance_sheet(session)
+    assert result.material_assets == Decimal("8000")
+    assert result.operating_cash == Decimal("1000")
+    assert result.net_worth == Decimal("9000")
 
 
 def test_negative_balance_snapshot_and_overdraft_headroom(session: Session):

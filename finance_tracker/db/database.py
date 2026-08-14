@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -12,11 +13,21 @@ from sqlalchemy.orm import Session, sessionmaker
 from finance_tracker.db.models import Base
 
 
+def synced_data_dir() -> Path:
+    return Path(os.getenv("FINANCE_DATA_DIR", Path.home() / "finance-data")).expanduser()
+
+
 def default_database_path() -> Path:
     override = os.getenv("FINANCE_TRACKER_DB_PATH")
     if override:
         return Path(override).expanduser()
-    data_home = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    synced = synced_data_dir()
+    if os.getenv("FINANCE_TRACKER_SYNC", "1") != "0" and (synced / ".git").exists():
+        return synced / "finance.db"
+    if sys.platform == "darwin":
+        data_home = Path.home() / "Library" / "Application Support"
+    else:
+        data_home = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     return data_home / "personal-finance-tracker" / "finance.db"
 
 
@@ -44,6 +55,13 @@ def get_engine() -> Engine:
     return _engine
 
 
+def dispose_engine() -> None:
+    global _engine
+    if _engine is not None:
+        _engine.dispose()
+        _engine = None
+
+
 def create_schema(engine: Engine | None = None) -> None:
     target = engine or get_engine()
     Base.metadata.create_all(target)
@@ -54,6 +72,7 @@ def _add_missing_columns(engine: Engine) -> None:
     statements = (
         ("recurring_expenses", "payment_debt_id", "INTEGER REFERENCES debts(id)"),
         ("one_time_events", "payment_debt_id", "INTEGER REFERENCES debts(id)"),
+        ("one_time_events", "applied", "INTEGER DEFAULT 0"),
     )
     with engine.begin() as conn:
         inspector = inspect(conn)

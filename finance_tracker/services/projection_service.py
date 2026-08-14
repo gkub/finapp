@@ -7,7 +7,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from finance_tracker.db.models import Debt, IncomeSource, OneTimeEvent, RecurringExpense, Schedule
+from finance_tracker.db.models import Account, Debt, Deposit, IncomeSource, OneTimeEvent, RecurringExpense, Schedule
 from finance_tracker.services.currency_service import RateUnavailable, convert
 from finance_tracker.services.schedule_service import InvalidSchedule, occurrences
 
@@ -26,11 +26,34 @@ class ProjectionEvent:
     running_balance: Decimal = Decimal("0")
     running_cards: Decimal = Decimal("0")
     running_debt: Decimal = Decimal("0")
+    running_investments: Decimal = Decimal("0")
+    investment_delta: Decimal = Decimal("0")
     category: str | None = None
 
 
-_ORDER = {"income": 0, "adjustment": 1, "expense": 2, "card_charge": 2, "debt_payment": 3}
-_CASH_EVENT_TYPES = frozenset({"income", "expense", "debt_payment", "adjustment"})
+_ORDER = {"income": 0, "deposit": 1, "adjustment": 1, "expense": 2, "card_charge": 2, "debt_payment": 3}
+_CASH_EVENT_TYPES = frozenset({"income", "expense", "debt_payment", "adjustment", "deposit"})
+
+
+def _in_cash(session: Session, account_id: int | None) -> bool:
+    if account_id is None:
+        return False
+    account = session.get(Account, account_id)
+    return bool(account and account.active and account.include_in_cash)
+
+
+def _deposit_impacts(session: Session, deposit: Deposit, converted: Decimal) -> tuple[Decimal, Decimal]:
+    """Return (cash_delta, investment_delta) in reporting currency."""
+    to_investment = deposit.destination_investment_id is not None
+    source_cash = _in_cash(session, deposit.source_account_id)
+    dest_cash = _in_cash(session, deposit.destination_account_id)
+    if to_investment:
+        return (-converted if source_cash else Decimal("0"), converted)
+    if dest_cash and not source_cash:
+        return converted, Decimal("0")
+    if source_cash and not dest_cash:
+        return -converted, Decimal("0")
+    return Decimal("0"), Decimal("0")
 
 
 def _debt_type(session: Session, debt_id: int | None) -> str | None:
@@ -76,6 +99,19 @@ def generate_events(
             events.append(ProjectionEvent(on_date, income.name, income.amount, income.currency, amount,
                                           "income", income.id, income.destination_account_id))
 
+    deposits = session.scalars(select(Deposit).where(Deposit.active.is_(True))).all()
+    for deposit in deposits:
+        for on_date in _occurrence_dates(session.get(Schedule, deposit.schedule_id), range_start, range_end):
+            converted = _converted(deposit.amount, deposit.currency, reporting_currency, session, on_date)
+            if converted is None:
+                continue
+            cash_delta, investment_delta = _deposit_impacts(session, deposit, converted)
+            events.append(ProjectionEvent(
+                on_date, deposit.name, deposit.amount, deposit.currency, cash_delta,
+                "deposit", deposit.id, deposit.source_account_id,
+                investment_delta=investment_delta,
+            ))
+
     skip_expenses = exclude_expense_ids or frozenset()
     expenses = session.scalars(select(RecurringExpense).where(RecurringExpense.active.is_(True))).all()
     for expense in expenses:
@@ -95,8 +131,12 @@ def generate_events(
                                           "card_charge" if charged else "expense", expense.id,
                                           expense.payment_account_id, charge_type))
 
-    debts = session.scalars(select(Debt).where(Debt.active.is_(True), Debt.minimum_payment.is_not(None),
-                                                Debt.payment_schedule_id.is_not(None))).all()
+    debts = session.scalars(select(Debt).where(
+        Debt.active.is_(True),
+        Debt.minimum_payment.is_not(None),
+        Debt.minimum_payment > 0,
+        Debt.payment_schedule_id.is_not(None),
+    )).all()
     for debt in debts:
         for on_date in _occurrence_dates(session.get(Schedule, debt.payment_schedule_id), range_start, range_end):
             native = -debt.minimum_payment
@@ -108,6 +148,18 @@ def generate_events(
 
     one_time = session.scalars(select(OneTimeEvent).where(OneTimeEvent.event_date.between(range_start, range_end))).all()
     for item in one_time:
+        if item.event_type == "debt_payment":
+            if item.applied:
+                continue
+            native = -item.amount
+            amount = _converted(native, item.currency, reporting_currency, session, item.event_date)
+            if amount is None:
+                continue
+            events.append(ProjectionEvent(
+                item.event_date, item.name, native, item.currency, amount,
+                "debt_payment", item.id, item.account_id, _debt_type(session, item.payment_debt_id),
+            ))
+            continue
         native = item.amount if item.event_type == "income" else -item.amount
         amount = _converted(native, item.currency, reporting_currency, session, item.event_date)
         if amount is None:
@@ -127,8 +179,9 @@ def project(
     events: list[ProjectionEvent],
     starting_cards: Decimal = Decimal("0"),
     starting_debt: Decimal = Decimal("0"),
+    starting_investments: Decimal = Decimal("0"),
 ) -> list[ProjectionEvent]:
-    cash, cards, debt = starting_cash, starting_cards, starting_debt
+    cash, cards, debt, investments = starting_cash, starting_cards, starting_debt, starting_investments
     projected: list[ProjectionEvent] = []
     for event in events:
         if event.event_type in _CASH_EVENT_TYPES:
@@ -143,7 +196,10 @@ def project(
             debt -= paid
             if event.debt_type == "credit_card":
                 cards -= paid
-        projected.append(replace(event, running_balance=cash, running_cards=cards, running_debt=debt))
+        investments += event.investment_delta
+        projected.append(replace(
+            event, running_balance=cash, running_cards=cards, running_debt=debt, running_investments=investments,
+        ))
     return projected
 
 
@@ -155,7 +211,7 @@ def lowest_projected_balance(starting_cash: Decimal, events: list[ProjectionEven
 def committed_cash(events: list[ProjectionEvent]) -> Decimal:
     return -sum(
         (event.reporting_amount for event in events
-         if event.event_type in {"expense", "debt_payment"} and event.reporting_amount < 0),
+         if event.event_type in {"expense", "debt_payment", "deposit"} and event.reporting_amount < 0),
         Decimal("0"),
     )
 
@@ -210,10 +266,10 @@ def position_at(
     else:
         applicable = [event for event in rows if event.date < on_date]
     if not applicable:
-        cash, cards, debt = starting_cash, starting_cards, starting_debt
+        cash, cards, debt, invested = starting_cash, starting_cards, starting_debt, investments
     else:
         last = applicable[-1]
-        cash, cards, debt = last.running_balance, last.running_cards, last.running_debt
-    projected_net = net_worth + (cash - starting_cash) - (debt - starting_debt)
-    return ProjectedPosition(on_date, cash, cards, debt, investments, projected_net)
+        cash, cards, debt, invested = last.running_balance, last.running_cards, last.running_debt, last.running_investments
+    projected_net = net_worth + (cash - starting_cash) - (debt - starting_debt) + (invested - investments)
+    return ProjectedPosition(on_date, cash, cards, debt, invested, projected_net)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor
@@ -27,6 +28,7 @@ _BAD = QColor("#e07a7a")
 _ROWS = (
     ("cash", "Cash"),
     ("investments", "Investments"),
+    ("material", "Material assets"),
     ("cards", "Cards owed"),
     ("debt", "Total debt"),
     ("net_worth", "Net worth"),
@@ -69,7 +71,7 @@ class Outlook(QWidget):
         configure_table(self.summary)
         self.summary.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.summary.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.summary.setMaximumHeight(230)
+        self.summary.setMaximumHeight(270)
         box.addWidget(self.summary)
 
         paused = QLabel("Pause subscriptions for this view")
@@ -161,10 +163,14 @@ class Outlook(QWidget):
                 start_args = (
                     sheet.operating_cash, sheet.credit_cards, sheet.debts, sheet.investments, sheet.net_worth,
                 )
-                baseline = project(sheet.operating_cash, baseline_events, sheet.credit_cards, sheet.debts)
+                baseline = project(
+                    sheet.operating_cash, baseline_events, sheet.credit_cards, sheet.debts, sheet.investments,
+                )
                 if paused:
                     paused_events = generate_events(session, date.today(), horizon_end, currency, paused)
-                    simulated = project(sheet.operating_cash, paused_events, sheet.credit_cards, sheet.debts)
+                    simulated = project(
+                        sheet.operating_cash, paused_events, sheet.credit_cards, sheet.debts, sheet.investments,
+                    )
                 else:
                     simulated = baseline
                 origin = position_at(start_date, baseline, *start_args, inclusive=False)
@@ -172,6 +178,7 @@ class Outlook(QWidget):
                 paused_as_of = position_at(end_date, simulated, *start_args, inclusive=True)
                 change = PositionDelta.between(origin, as_of)
                 versus = PositionDelta.between(as_of, paused_as_of)
+                material = sheet.material_assets
                 lo, hi = min(start_date, end_date), max(start_date, end_date)
                 hits: dict[int, int] = {}
                 for event in baseline_events:
@@ -184,6 +191,7 @@ class Outlook(QWidget):
         values = {
             "cash": (origin.cash, as_of.cash, change.cash, paused_as_of.cash, versus.cash),
             "investments": (origin.investments, as_of.investments, change.investments, paused_as_of.investments, versus.investments),
+            "material": (material, material, Decimal("0"), material, Decimal("0")),
             "cards": (origin.cards, as_of.cards, change.cards, paused_as_of.cards, versus.cards),
             "debt": (origin.debt, as_of.debt, change.debt, paused_as_of.debt, versus.debt),
             "net_worth": (origin.net_worth, as_of.net_worth, change.net_worth, paused_as_of.net_worth, versus.net_worth),
@@ -201,7 +209,7 @@ class Outlook(QWidget):
             )
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
-                if col in {3, 5} and key != "investments":
+                if col in {3, 5}:
                     amount = delta if col == 3 else vs_keep
                     better = amount < 0 if key in lower_is_better else amount > 0
                     if amount != 0:

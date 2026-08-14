@@ -7,7 +7,10 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from finance_tracker.db.models import Account, BalanceSnapshot, Debt, DebtSnapshot, InvestmentAccount
+from finance_tracker.db.models import (
+    Account, BalanceSnapshot, Debt, DebtSnapshot, InvestmentAccount, MaterialAsset,
+    MaterialAssetSnapshot, OneTimeEvent,
+)
 from finance_tracker.services.currency_service import RateUnavailable, convert
 from finance_tracker.services.investment_service import value_account
 
@@ -17,6 +20,7 @@ class BalanceSheet:
     operating_cash: Decimal
     ordinary_assets: Decimal
     investments: Decimal
+    material_assets: Decimal
     debts: Decimal
     net_worth: Decimal
     credit_cards: Decimal
@@ -71,7 +75,18 @@ def current_balance_sheet(session: Session, reporting_currency: str = "CAD", on_
         if item.debt_type == "credit_card":
             cards += value
     cash = operating_cash(session, reporting_currency, on_date)
-    return BalanceSheet(cash, ordinary, investments, total_debt, ordinary + investments - total_debt, cards)
+    stuff = Decimal("0")
+    for item in session.scalars(select(MaterialAsset).where(
+        MaterialAsset.active.is_(True), MaterialAsset.include_in_net_worth.is_(True),
+    )):
+        try:
+            stuff += convert(item.current_value, item.currency, reporting_currency, session, on_date)
+        except RateUnavailable:
+            continue
+    return BalanceSheet(
+        cash, ordinary, investments, stuff, total_debt,
+        ordinary + investments + stuff - total_debt, cards,
+    )
 
 
 def update_account_balance(session: Session, account: Account, balance: Decimal, snapshot_date: date) -> BalanceSnapshot:
@@ -84,6 +99,57 @@ def update_account_balance(session: Session, account: Account, balance: Decimal,
 def update_debt_balance(session: Session, debt: Debt, balance: Decimal, snapshot_date: date) -> DebtSnapshot:
     debt.current_balance = balance
     snapshot = DebtSnapshot(debt_id=debt.id, balance=balance, snapshot_date=snapshot_date)
+    session.add(snapshot)
+    return snapshot
+
+
+def record_debt_paydown(
+    session: Session,
+    debt: Debt,
+    amount: Decimal,
+    on_date: date,
+    account: Account | None,
+    today: date | None = None,
+) -> OneTimeEvent:
+    """Record a manual debt payment. Future dates are plans; today or earlier moves balances."""
+    if amount <= 0:
+        raise ValueError("Paydown amount must be positive")
+    today = today or date.today()
+    event = session.scalar(select(OneTimeEvent).where(
+        OneTimeEvent.event_type == "debt_payment",
+        OneTimeEvent.payment_debt_id == debt.id,
+        OneTimeEvent.event_date == on_date,
+        OneTimeEvent.applied.is_(False),
+    ))
+    if event is None:
+        event = OneTimeEvent(
+            name=f"{debt.name} payment",
+            event_type="debt_payment",
+            amount=amount,
+            currency=debt.currency,
+            event_date=on_date,
+            account_id=account.id if account is not None else None,
+            payment_debt_id=debt.id,
+            applied=False,
+        )
+        session.add(event)
+    else:
+        event.amount = amount
+        event.account_id = account.id if account is not None else None
+        event.currency = debt.currency
+    if on_date <= today and not event.applied:
+        if account is not None:
+            update_account_balance(session, account, account.current_balance - amount, on_date)
+        update_debt_balance(session, debt, debt.current_balance - amount, on_date)
+        event.applied = True
+    return event
+
+
+def update_material_asset_value(
+    session: Session, asset: MaterialAsset, value: Decimal, snapshot_date: date,
+) -> MaterialAssetSnapshot:
+    asset.current_value = value
+    snapshot = MaterialAssetSnapshot(material_asset_id=asset.id, value=value, snapshot_date=snapshot_date)
     session.add(snapshot)
     return snapshot
 

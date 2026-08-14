@@ -186,6 +186,22 @@ class OneTimeEvent(Base):
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     payment_debt_id: Mapped[int | None] = mapped_column(ForeignKey("debts.id"))
     event_type: Mapped[str] = mapped_column(String(16))
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class Deposit(Base):
+    """Scheduled movement of money into a bank or investment account. Plans only."""
+    __tablename__ = "deposits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    amount: Mapped[Decimal] = mapped_column(MONEY)
+    currency: Mapped[str] = mapped_column(ForeignKey("currencies.code"))
+    schedule_id: Mapped[int] = mapped_column(ForeignKey("schedules.id"))
+    source_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    destination_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    destination_investment_id: Mapped[int | None] = mapped_column(ForeignKey("investment_accounts.id"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[str | None] = mapped_column(Text)
 
 
@@ -238,6 +254,30 @@ class InvestmentSnapshot(Base):
     market_value: Mapped[Decimal] = mapped_column(MONEY)
     reporting_currency: Mapped[str] = mapped_column(ForeignKey("currencies.code"))
     cash_balance: Mapped[Decimal] = mapped_column(MONEY)
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class MaterialAsset(Base):
+    __tablename__ = "material_assets"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    asset_type: Mapped[str] = mapped_column(String(32), default="other")
+    current_value: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    currency: Mapped[str] = mapped_column(ForeignKey("currencies.code"), default="CAD")
+    include_in_net_worth: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    snapshots: Mapped[list[MaterialAssetSnapshot]] = relationship(cascade="all, delete-orphan")
+
+
+class MaterialAssetSnapshot(Base):
+    __tablename__ = "material_asset_snapshots"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_asset_id: Mapped[int] = mapped_column(ForeignKey("material_assets.id", ondelete="CASCADE"))
+    value: Mapped[Decimal] = mapped_column(MONEY)
     snapshot_date: Mapped[date] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

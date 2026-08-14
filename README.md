@@ -1,128 +1,45 @@
 # Personal Finance Tracker
 
-A private, local-only Linux desktop application for tracking cash flow, accounts,
-debts, recurring bills, investments, and net worth. Financial data is stored in
-a local SQLite database and no internet connection is required.
+Local desktop app for cash flow, accounts, debts, bills, investments, and net
+worth. Runs on Linux and macOS. This repo is source only — `finance.db` never
+goes here. Money data lives in the private repo `gkub/finapp_db`.
 
-The full product specification and computer-to-computer development handoff are in `docs/`.
-
-## Features currently available
-
-- Dashboard with operating cash, investments, debt, net worth, projected minimum balance, and safe-to-spend
-- Negative balances, overdraft limits, and overdraft interest rates
-- Exact weekly, biweekly, monthly, and yearly income/expense schedules
-- Debts, one-time events, TFSA/FHSA/RRSP accounts, holdings, and manual CAD/USD prices
-- Cash-flow projections, dated snapshots, local backups, editing, disabling, and confirmed deletion
-
-## Install on another computer
-
-These instructions target Debian, Ubuntu, Linux Mint, Pop!_OS, and related distributions.
-
-### 1. Install system requirements
+## Run
 
 ```bash
-sudo apt update
-sudo apt install -y git python3 python3-venv
+cd ~/Code/finapp
+./run.sh
 ```
 
-PySide6 installed through `pip` bundles Qt. A particularly minimal installation may also need:
+That is the whole daily loop. First time it creates the Python env and clones
+the private database if needed. Closing the window pulls/pushes the DB. Only
+one computer should have the app open.
+
+## New computer
+
+Python 3.11+, git, and SSH to GitHub (`ssh -T git@github.com`).
 
 ```bash
-sudo apt install -y libegl1 libgl1 libxkbcommon-x11-0
+git clone git@github.com:gkub/finapp.git ~/Code/finapp
+cd ~/Code/finapp
+./run.sh
 ```
 
-### 2. Download the project
+Linux extras: `sudo apt install python3 python3-venv sqlite3` (and on a bare
+system maybe `libegl1 libgl1 libxkbcommon-x11-0`). WSL2 needs WSLg / a GUI
+session.
 
-After pushing this directory to a Git repository:
+macOS: if `python3 --version` is older than 3.11, `brew install python`. Launch
+from Terminal.app, not a headless SSH session.
+
+## Tests
 
 ```bash
-git clone YOUR_REPOSITORY_URL finapp
-cd finapp
-```
-
-Alternatively, copy the directory to the other computer. Do not copy `.venv`; recreate it below.
-
-### 3. Create the environment and install
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e '.[desktop,dev]'
-```
-
-### 4. Launch
-
-```bash
-.venv/bin/finance-tracker
-```
-
-If Cursor reports that `PySide6` cannot be found, use:
-
-```bash
-env -u __PYVENV_LAUNCHER__ .venv/bin/finance-tracker
-```
-
-The database is created automatically on first launch.
-
-## Run the tests
-
-```bash
-env -u __PYVENV_LAUNCHER__ QT_QPA_PLATFORM=offscreen .venv/bin/pytest
-```
-
-## Data location and migration
-
-Data is stored at:
-
-```text
-~/.local/share/personal-finance-tracker/finance.db
-```
-
-To move existing data to another computer:
-
-1. Close the application on both computers.
-2. Use **Settings → Back up database** on the old computer.
-3. Install and launch once on the new computer, then close it.
-4. Copy the backup to `~/.local/share/personal-finance-tracker/finance.db`.
-5. Launch again.
-
-Keep backups private: they contain your financial information. Database files are ignored by Git.
-
-For an isolated database:
-
-```bash
-FINANCE_TRACKER_DB_PATH=/absolute/path/test-finance.db .venv/bin/finance-tracker
-```
-
-## Updating
-
-```bash
-git pull
-.venv/bin/python -m pip install -e '.[desktop,dev]'
-env -u __PYVENV_LAUNCHER__ .venv/bin/finance-tracker
-```
-
-## Troubleshooting
-
-### `No module named PySide6`
-
-```bash
-env -u __PYVENV_LAUNCHER__ .venv/bin/python -c 'import PySide6; print(PySide6.__version__)'
-env -u __PYVENV_LAUNCHER__ .venv/bin/python -m pip install -e '.[desktop,dev]'
-```
-
-### Qt platform plugin or display error
-
-Launch from a graphical Linux desktop session and install the optional runtime libraries in step 1.
-
-### Temporary empty database
-
-Do not delete your real database unless it is backed up. For a clean temporary database:
-
-```bash
-FINANCE_TRACKER_DB_PATH=/tmp/finance-tracker-test.db .venv/bin/finance-tracker
+./run.sh  # once, so .venv exists
+QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest tests -q
 ```
 
 ## Privacy
 
-There is no telemetry, cloud synchronization, bank login, or required network integration. Core data remains in local SQLite.
+No telemetry, bank login, or required cloud. Optional quotes/FX. Keep backups
+private. Specs are in `docs/`.

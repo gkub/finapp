@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog,
+    QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDateEdit, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
@@ -15,11 +15,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from finance_tracker.db.database import session_scope
-from finance_tracker.db.models import Account
+from finance_tracker.db.models import Account, Debt, InvestmentAccount, InvestmentSnapshot, MaterialAsset
 from finance_tracker.services.balance_service import (
     current_balance_sheet, estimated_overdraft_interest, overdraft_headroom,
-    supports_overdraft, update_account_balance,
+    supports_overdraft, update_account_balance, update_debt_balance,
+    update_material_asset_value,
 )
+from finance_tracker.services.investment_service import value_account
 from finance_tracker.services.projection_service import (
     committed_cash, generate_events, lowest_projected_balance, project,
     safe_to_spend,
@@ -28,8 +30,8 @@ from finance_tracker.utils.money import format_money
 from finance_tracker.ui.domain_pages import SettingsPage, configure_table, fit_table_columns, projection_prefs
 from finance_tracker.ui.outlook_page import Outlook
 from finance_tracker.ui.management_pages import (
-    EventPage, InvestmentManagementPage, ManagedDebtPage, ManagedExpensePage,
-    ManagedIncomePage, selected_id,
+    EventPage, InvestmentManagementPage, ManagedAssetPage, ManagedDebtPage, ManagedDepositPage,
+    ManagedExpensePage, ManagedIncomePage, selected_id,
 )
 
 STYLE = """
@@ -48,6 +50,11 @@ QLabel#metric { font-size:23px; font-weight:700; }
 QLineEdit,QComboBox,QDoubleSpinBox,QDateEdit { background:#171c25; border:1px solid #354154; border-radius:6px; padding:7px; }
 QTableWidget { background:#171c25; alternate-background-color:#1b222d; border:1px solid #293241; gridline-color:#293241; }
 QTableWidget::item { padding:6px 10px; }
+QTableWidget QDoubleSpinBox {
+    padding: 2px 10px;
+    min-height: 34px;
+    font-size: 15px;
+}
 QHeaderView::section { background:#202733; color:#b9c4d4; border:none; padding:8px 12px; font-weight:600; }
 """
 
@@ -92,17 +99,18 @@ class Dashboard(QWidget):
         self.cards = {}
         for i, (key, label) in enumerate((
             ("cash", "Operating cash"), ("investments", "Investments"),
-            ("debt", "Total debt"), ("net", "Net worth"),
-            ("low", "30-day minimum"), ("safe", "Safe to spend"),
-            ("proj_cards", "Projected cards"), ("proj_debt", "Projected debt"),
+            ("material", "Material assets"), ("debt", "Total debt"),
+            ("net", "Net worth"), ("low", "30-day minimum"),
+            ("safe", "Safe to spend"), ("proj_cards", "Projected cards"),
+            ("proj_debt", "Projected debt"),
         )):
             self.cards[key] = Card(label)
             grid.addWidget(self.cards[key], i // 4, i % 4)
         box.addLayout(grid)
         self.upcoming = QLabel("Upcoming 30 days")
         box.addWidget(self.upcoming)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Cash", "Cards", "Debt"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Cash", "Investments", "Cards", "Debt"])
         configure_table(self.table)
         box.addWidget(self.table, 1)
 
@@ -112,7 +120,7 @@ class Dashboard(QWidget):
                 days, reserve, currency = projection_prefs(session)
                 sheet = current_balance_sheet(session, currency)
                 events = generate_events(session, date.today(), date.today() + timedelta(days=days), currency)
-                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts)
+                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts, sheet.investments)
                 self.cards["low"].caption.setText(f"{days}-day cash low")
                 self.upcoming.setText(f"Upcoming {days} days")
                 proj_cards, proj_debt = sheet.credit_cards, sheet.debts
@@ -120,7 +128,7 @@ class Dashboard(QWidget):
                     proj_cards, proj_debt = rows[-1].running_cards, rows[-1].running_debt
                 values = {
                     "cash": sheet.operating_cash, "investments": sheet.investments,
-                    "debt": sheet.debts, "net": sheet.net_worth,
+                    "material": sheet.material_assets, "debt": sheet.debts, "net": sheet.net_worth,
                     "low": lowest_projected_balance(sheet.operating_cash, events),
                     "safe": safe_to_spend(sheet.operating_cash, events, reserve),
                     "proj_cards": proj_cards, "proj_debt": proj_debt,
@@ -132,7 +140,8 @@ class Dashboard(QWidget):
                     for col, value in enumerate((
                         event.date.isoformat(), event.description,
                         format_money(event.reporting_amount), format_money(event.running_balance),
-                        format_money(event.running_cards), format_money(event.running_debt),
+                        format_money(event.running_investments), format_money(event.running_cards),
+                        format_money(event.running_debt),
                     )):
                         self.table.setItem(row, col, QTableWidgetItem(value))
                 fit_table_columns(self.table)
@@ -361,9 +370,9 @@ class CashFlow(QWidget):
         for card in self.flow_cards:
             cards.addWidget(card)
         box.addLayout(cards)
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["Date", "Description", "Type", "Amount", "Currency", "Cash", "Cards", "Debt"],
+            ["Date", "Description", "Type", "Amount", "Currency", "Cash", "Investments", "Cards", "Debt"],
         )
         configure_table(self.table)
         box.addWidget(self.table)
@@ -382,7 +391,7 @@ class CashFlow(QWidget):
                 horizon = int(self.days.currentText())
                 sheet = current_balance_sheet(session, currency)
                 events = generate_events(session, date.today(), date.today() + timedelta(days=horizon), currency)
-                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts)
+                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts, sheet.investments)
                 self.committed.value.setText(format_money(committed_cash(events)))
                 self.minimum.value.setText(format_money(lowest_projected_balance(sheet.operating_cash, events)))
                 self.safe.value.setText(format_money(safe_to_spend(sheet.operating_cash, events, reserve)))
@@ -397,8 +406,8 @@ class CashFlow(QWidget):
                     values = (
                         event.date.isoformat(), event.description, event.event_type.replace("_", " ").title(),
                         format_money(event.amount, event.currency), event.currency,
-                        format_money(event.running_balance), format_money(event.running_cards),
-                        format_money(event.running_debt),
+                        format_money(event.running_balance), format_money(event.running_investments),
+                        format_money(event.running_cards), format_money(event.running_debt),
                     )
                     for col, value in enumerate(values):
                         self.table.setItem(row, col, QTableWidgetItem(value))
@@ -414,48 +423,105 @@ class UpdateFinances(QWidget):
 
     def __init__(self):
         super().__init__()
-        box = page_layout(self, "Update Finances", "Update balances quickly and preserve dated snapshots.")
+        box = page_layout(
+            self, "Update Finances",
+            "Look at the bank / brokerage / debt apps, type what they say, save. "
+            "That becomes today's snapshot. Holdings and stock prices stay on Investments.",
+        )
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Snapshot date"))
+        controls.addWidget(QLabel("As of"))
         self.snapshot_date = QDateEdit(QDate.currentDate())
         self.snapshot_date.setCalendarPopup(True)
         controls.addWidget(self.snapshot_date)
         controls.addStretch()
         box.addLayout(controls)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Account", "Previous", "Current", "Est. interest (30d)"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Type", "Name", "On file", "New amount", "Note"])
         configure_table(self.table)
+        self.table.verticalHeader().setDefaultSectionSize(48)
         box.addWidget(self.table)
         save = QPushButton("Save updates")
         save.setObjectName("primary")
         save.clicked.connect(self.save)
         box.addWidget(save, alignment=Qt.AlignmentFlag.AlignRight)
-        self.ids = []
+        self.rows = []
+
+    def _amount_field(self, value):
+        field = QDoubleSpinBox()
+        field.setRange(-999999999, 999999999)
+        field.setDecimals(2)
+        field.setPrefix("$ ")
+        field.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        field.setGroupSeparatorShown(False)
+        field.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        field.setMinimumSize(200, 36)
+        field.setValue(float(value))
+        return field
 
     def refresh(self):
+        rows = []
         with session_scope() as session:
-            accounts = session.scalars(select(Account).where(Account.active.is_(True)).order_by(Account.name)).all()
-            self.ids = [item.id for item in accounts]
-            self.table.setRowCount(len(accounts))
-            for row, account in enumerate(accounts):
-                self.table.setItem(row, 0, QTableWidgetItem(account.name))
-                self.table.setItem(row, 1, QTableWidgetItem(format_money(account.current_balance, account.currency)))
-                field = AccountDialog.money_spin(-999999999, 999999999)
-                field.setValue(float(account.current_balance))
-                self.table.setCellWidget(row, 2, field)
+            for account in session.scalars(select(Account).where(Account.active.is_(True)).order_by(Account.name)):
                 interest = estimated_overdraft_interest(account, 30)
-                self.table.setItem(row, 3, QTableWidgetItem(format_money(interest, account.currency) if interest else "—"))
-            fit_table_columns(self.table)
+                note = f"Overdraft ~{format_money(interest, account.currency)} if you stay here 30 days" if interest else "—"
+                rows.append(("account", account.id, "Bank", account.name,
+                             format_money(account.current_balance, account.currency),
+                             account.current_balance, note))
+            for debt in session.scalars(select(Debt).where(Debt.active.is_(True)).order_by(Debt.name)):
+                rows.append(("debt", debt.id, "Debt", debt.name,
+                             format_money(debt.current_balance, debt.currency),
+                             debt.current_balance, "Amount still owed"))
+            for account in session.scalars(
+                select(InvestmentAccount).where(InvestmentAccount.active.is_(True)).order_by(InvestmentAccount.name)
+            ):
+                rows.append(("investment", account.id, "Investment cash", account.name,
+                             format_money(account.cash_balance, account.cash_currency),
+                             account.cash_balance, "Cash in the account, not holdings"))
+            for asset in session.scalars(
+                select(MaterialAsset).where(MaterialAsset.active.is_(True)).order_by(MaterialAsset.name)
+            ):
+                rows.append(("asset", asset.id, "Asset", asset.name,
+                             format_money(asset.current_value, asset.currency),
+                             asset.current_value, "Estimated resale"))
+        self.rows = [(kind, ident) for kind, ident, *_ in rows]
+        self.table.setRowCount(len(rows))
+        for row, (_, _, kind, name, previous, amount, note) in enumerate(rows):
+            self.table.setItem(row, 0, QTableWidgetItem(kind))
+            self.table.setItem(row, 1, QTableWidgetItem(name))
+            self.table.setItem(row, 2, QTableWidgetItem(previous))
+            self.table.setCellWidget(row, 3, self._amount_field(amount))
+            self.table.setItem(row, 4, QTableWidgetItem(note))
+        fit_table_columns(self.table)
+        self.table.setColumnWidth(3, max(self.table.columnWidth(3), 220))
+        self.table.setColumnWidth(4, max(self.table.columnWidth(4), 280))
+        self.table.resizeRowsToContents()
+        for row in range(self.table.rowCount()):
+            self.table.setRowHeight(row, max(self.table.rowHeight(row), 48))
 
     def save(self):
+        on_date = self.snapshot_date.date().toPython()
         with session_scope() as session:
-            for row, ident in enumerate(self.ids):
-                account = session.get(Account, ident)
-                value = Decimal(str(self.table.cellWidget(row, 2).value()))
-                update_account_balance(session, account, value, self.snapshot_date.date().toPython())
+            for row, (kind, ident) in enumerate(self.rows):
+                value = Decimal(str(self.table.cellWidget(row, 3).value()))
+                if kind == "account":
+                    update_account_balance(session, session.get(Account, ident), value, on_date)
+                elif kind == "debt":
+                    update_debt_balance(session, session.get(Debt, ident), value, on_date)
+                elif kind == "investment":
+                    account = session.get(InvestmentAccount, ident)
+                    account.cash_balance = value
+                    session.add(InvestmentSnapshot(
+                        investment_account_id=account.id,
+                        market_value=value_account(session, account, account.cash_currency, on_date),
+                        reporting_currency=account.cash_currency,
+                        cash_balance=value,
+                        snapshot_date=on_date,
+                    ))
+                elif kind == "asset":
+                    update_material_asset_value(session, session.get(MaterialAsset, ident), value, on_date)
         self.refresh()
         self.changed.emit()
-        QMessageBox.information(self, "Saved", "Balances and snapshots were saved.")
+        QMessageBox.information(self, "Saved", "Those amounts are now on file, with a snapshot for this date.")
 
 
 class Placeholder(QWidget):
@@ -496,8 +562,9 @@ class MainWindow(QMainWindow):
         definitions = [
             ("Dashboard", Dashboard()), ("Cash Flow", CashFlow()), ("Outlook", Outlook()),
             ("Accounts", Accounts()),
-            ("Income", ManagedIncomePage()), ("Recurring Expenses", ManagedExpensePage()),
-            ("Debts", ManagedDebtPage()), ("One-Time Events", EventPage()),
+            ("Income", ManagedIncomePage()), ("Deposits", ManagedDepositPage()),
+            ("Recurring Expenses", ManagedExpensePage()),
+            ("Debts", ManagedDebtPage()), ("Assets", ManagedAssetPage()), ("One-Time Events", EventPage()),
             ("Investments", InvestmentManagementPage()),
             ("Update Finances", UpdateFinances()), ("Settings", SettingsPage()),
         ]
