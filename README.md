@@ -26,7 +26,11 @@ travel with the machine):
 ssh -T git@github.com
 ```
 
-That must print `Hi gkub`. If it does not:
+That must print `Hi gkub`. On a work computer with two GitHub accounts,
+`git@github.com` is work — use `git@github.com-personal` instead. `./run.sh`
+picks that host and refuses to clone or push as anyone but `gkub`.
+
+If `ssh -T` does not say `Hi gkub`:
 
 ```bash
 ssh-keygen -t ed25519 -C "macbook" -f ~/.ssh/id_ed25519 -N ""

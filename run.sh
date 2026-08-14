@@ -36,19 +36,10 @@ pick_python() {
 
 PYTHON="$(pick_python)"
 
+# shellcheck source=scripts/personal-github.sh
+source "$ROOT/scripts/personal-github.sh"
 need_github_ssh() {
-  local output
-  output="$(ssh -o BatchMode=yes -o ConnectTimeout=8 -T git@github.com 2>&1 || true)"
-  if ! grep -qi 'successfully authenticated' <<<"$output"; then
-    echo "This computer cannot talk to GitHub over SSH yet. A key on Linux does not exist on the Mac until you add one here." >&2
-    echo "In Terminal:" >&2
-    echo "  ssh-keygen -t ed25519 -C \"macbook\" -f ~/.ssh/id_ed25519 -N \"\"" >&2
-    echo "  cat ~/.ssh/id_ed25519.pub" >&2
-    echo "Add that public key at https://github.com/settings/keys then:" >&2
-    echo "  ssh -T git@github.com" >&2
-    echo "When that says Hi gkub, run ./run.sh again." >&2
-    exit 1
-  fi
+  require_personal_github_ssh
 }
 
 if [[ ! -x .venv/bin/python ]]; then

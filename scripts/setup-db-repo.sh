@@ -2,11 +2,13 @@
 # Clone or fill ~/finance-data from gkub/finapp_db. Called by ./run.sh when needed.
 set -euo pipefail
 
-REMOTE="${FINAPP_DB_REMOTE:-git@github.com:gkub/finapp_db.git}"
-DATA_DIR="${FINANCE_DATA_DIR:-$HOME/finance-data}"
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=personal-github.sh
+source "$script_dir/personal-github.sh"
+
 FINAPP_HOME="${FINAPP_HOME:-$(cd "$script_dir/.." && pwd)}"
+REMOTE="${FINAPP_DB_REMOTE:-$(personal_github_remote finapp_db)}"
+DATA_DIR="${FINANCE_DATA_DIR:-$HOME/finance-data}"
 
 os_default_db() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -49,7 +51,10 @@ echo "App home:   $FINAPP_HOME"
 
 if [[ -d "$DATA_DIR/.git" ]]; then
   echo "Using existing clone at $DATA_DIR"
-  git -C "$DATA_DIR" remote get-url origin >/dev/null
+  current="$(git -C "$DATA_DIR" remote get-url origin)"
+  if [[ "$current" == git@github.com:gkub/* ]]; then
+    git -C "$DATA_DIR" remote set-url origin "$REMOTE"
+  fi
 elif [[ -e "$DATA_DIR" && -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]]; then
   echo "$DATA_DIR exists and is not an empty git clone. Move it aside or set FINANCE_DATA_DIR." >&2
   exit 1
@@ -58,6 +63,7 @@ else
 fi
 
 cd "$DATA_DIR"
+use_personal_git_identity "$DATA_DIR"
 
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
   git pull --rebase
