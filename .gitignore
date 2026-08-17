@@ -43,3 +43,6 @@ exports/
 *.log
 *.tmp
 .cache/
+
+# Machine-local onboarding configuration
+.finapp.env

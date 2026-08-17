@@ -1,45 +1,45 @@
 # Personal Finance Tracker
 
 Local desktop app for cash flow, accounts, debts, bills, investments, and net
-worth. Runs on Linux and macOS. This repo is source only — `finance.db` never
-goes here. Money data lives in the private repo `gkub/finapp_db`.
+worth. Runs on Linux and macOS. The application source and each user’s financial
+database are intentionally separate.
 
-## Run (every time, either computer)
+## Everyday use
 
 ```bash
 cd ~/Code/finapp
 ./run.sh
 ```
 
-Closing the window syncs the database. Only one computer should have the app
-open.
+The first run installs Python dependencies and asks how to store data. Later runs
+open the app directly. When private GitHub sync is enabled, opening pulls the
+latest database and closing commits and pushes it.
 
-## New computer (Mac included)
+> Only open a synced database on one computer at a time. SQLite database commits
+> do not merge; if two computers edit concurrently, the last push can conflict.
 
-Same three commands as Linux. `./run.sh` creates the Python env and clones the
-private DB. You do not run a second setup script.
+## Share with another person
 
-**Once on the Mac**, GitHub SSH has to work *on that laptop* (Linux keys do not
-travel with the machine):
+### Before she starts
 
-```bash
-ssh -T git@github.com
-```
+Give her access to this application repository (add her as a GitHub collaborator
+if it is private). Do **not** give her access to your `finapp_db` repository.
+Every user should own a separate private database repository.
 
-That must print `Hi gkub`. On a work computer with two GitHub accounts,
-`git@github.com` is work — use `git@github.com-personal` instead. `./run.sh`
-picks that host and refuses to clone or push as anyone but `gkub`.
+### Her one-time setup
 
-If `ssh -T` does not say `Hi gkub`:
+Linux requirements:
 
 ```bash
-ssh-keygen -t ed25519 -C "macbook" -f ~/.ssh/id_ed25519 -N ""
-cat ~/.ssh/id_ed25519.pub
+sudo apt update
+sudo apt install -y git python3 python3-venv sqlite3
 ```
 
-Add the printed line at https://github.com/settings/keys then retry `ssh -T`.
+macOS requirements: install Apple command-line tools with
+`xcode-select --install`. If Python is older than 3.11, install a current Python
+with Homebrew.
 
-Then:
+Clone and run:
 
 ```bash
 git clone git@github.com:gkub/finapp.git ~/Code/finapp
@@ -47,21 +47,99 @@ cd ~/Code/finapp
 ./run.sh
 ```
 
-Use Terminal.app, not SSH into the Mac. If `git` is missing:
-`xcode-select --install`. If Python is old and Homebrew exists, `./run.sh`
-installs a current Python itself.
+On first run she chooses:
 
-Linux extras if a package is missing:
-`sudo apt install python3 python3-venv sqlite3 git`. WSL2 needs a GUI session.
+1. **Private GitHub sync (recommended):** if authenticated GitHub CLI (`gh`) is
+   available, setup offers to create her private `finapp_db` automatically.
+2. **Manual private repo:** without `gh`, setup explains how to create one empty
+   private GitHub repo and asks for its SSH URL, commit name, and email.
+3. **Local only:** no GitHub database repo or sync; data stays on that computer.
+
+Her choice is saved to `.finapp.env`, which is mode `600` and ignored by Git.
+It contains configuration—not financial data or GitHub tokens.
+
+### Optional: install GitHub CLI for the most automated setup
+
+Follow the official package instructions for the platform, then authenticate:
+
+```bash
+gh auth login
+```
+
+After that, `./run.sh` can create the private database repository for her. GitHub
+CLI is optional; manually creating an empty private repo works just as well.
+
+### Change the storage choice later
+
+Close the app, then run:
+
+```bash
+./scripts/configure.sh --force
+```
+
+If changing from local-only to sync, the setup copies the existing standard
+local database into the new private repository when possible.
+
+## Database locations
+
+Private GitHub sync:
+
+```text
+~/finance-data/finance.db
+```
+
+Local-only Linux:
+
+```text
+~/.local/share/personal-finance-tracker/finance.db
+```
+
+Local-only macOS:
+
+```text
+~/Library/Application Support/personal-finance-tracker/finance.db
+```
+
+The app repository ignores `.finapp.env`, SQLite files, sidecars, and backups.
+The private data repository ignores SQLite WAL/journal sidecars.
+
+## SSH troubleshooting
+
+Verify GitHub access on the new computer:
+
+```bash
+ssh -T git@github.com
+```
+
+If multiple GitHub accounts use SSH aliases, paste the appropriate aliased URL
+during manual setup, for example:
+
+```text
+git@github.com-personal:USERNAME/finapp_db.git
+```
+
+## Updating
+
+```bash
+cd ~/Code/finapp
+git pull
+./run.sh
+```
+
+`run.sh` reinstalls the editable package when `pyproject.toml` changes.
 
 ## Tests
 
 ```bash
-./run.sh
-QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest tests -q
+QT_QPA_PLATFORM=offscreen PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  env -u __PYVENV_LAUNCHER__ .venv/bin/python -m pytest tests -q
 ```
 
 ## Privacy
 
-No telemetry, bank login, or required cloud. Optional quotes/FX. Keep backups
-private. Specs are in `docs/`.
+No telemetry or bank login is used. Market and FX lookup are optional. A database
+repository contains highly sensitive financial information: keep it private,
+never reuse another person’s data repository, and do not add collaborators unless
+they should see all of that financial data.
+
+The specification and development handoff are in `docs/`.

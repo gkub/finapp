@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Clone or fill ~/finance-data from gkub/finapp_db. Called by ./run.sh when needed.
+# Clone or initialize the private DB repository selected during onboarding.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=personal-github.sh
-source "$script_dir/personal-github.sh"
-
 FINAPP_HOME="${FINAPP_HOME:-$(cd "$script_dir/.." && pwd)}"
-REMOTE="${FINAPP_DB_REMOTE:-$(personal_github_remote finapp_db)}"
+if [[ -f "$FINAPP_HOME/.finapp.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$FINAPP_HOME/.finapp.env"
+fi
+REMOTE="${FINAPP_DB_REMOTE:-}"
 DATA_DIR="${FINANCE_DATA_DIR:-$HOME/finance-data}"
+
+if [[ -z "$REMOTE" ]]; then
+  echo "No private database remote is configured." >&2
+  echo "Run: $FINAPP_HOME/scripts/configure.sh --force" >&2
+  exit 1
+fi
 
 os_default_db() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -27,76 +34,67 @@ if [[ -n "${FINANCE_TRACKER_DB_PATH:-}" && -f "${FINANCE_TRACKER_DB_PATH}" ]]; t
 fi
 
 if pgrep -f 'finance_tracker\.app|[.]venv/bin/finance-tracker' >/dev/null 2>&1; then
-  echo "Close the finance tracker before copying or cloning the database." >&2
+  echo "Close the finance tracker before setting up the database." >&2
   exit 1
 fi
-
-need() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Missing command: $1" >&2
-    if [[ "$1" == sqlite3 ]]; then
-      echo "Linux: sudo apt install sqlite3    macOS: already present, or brew install sqlite" >&2
-    fi
+for command in git sqlite3; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "Missing command: $command" >&2
+    echo "Linux: sudo apt install git sqlite3" >&2
     exit 1
   fi
-}
+done
 
-need git
-need sqlite3
-
-echo "Remote:     $REMOTE"
-echo "Data dir:   $DATA_DIR"
-echo "Live DB:    $LIVE_DB"
-echo "App home:   $FINAPP_HOME"
-
+echo "Remote:   $REMOTE"
+echo "Data dir: $DATA_DIR"
 if [[ -d "$DATA_DIR/.git" ]]; then
   echo "Using existing clone at $DATA_DIR"
   current="$(git -C "$DATA_DIR" remote get-url origin)"
-  if [[ "$current" == git@github.com:gkub/* ]]; then
-    git -C "$DATA_DIR" remote set-url origin "$REMOTE"
+  if [[ "$current" != "$REMOTE" ]]; then
+    echo "$DATA_DIR points to a different database remote: $current" >&2
+    echo "Move it aside or set FINANCE_DATA_DIR to a new directory." >&2
+    exit 1
   fi
 elif [[ -e "$DATA_DIR" && -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]]; then
-  echo "$DATA_DIR exists and is not an empty git clone. Move it aside or set FINANCE_DATA_DIR." >&2
+  echo "$DATA_DIR exists and is not empty. Move it aside or set FINANCE_DATA_DIR." >&2
   exit 1
 else
   git clone "$REMOTE" "$DATA_DIR"
 fi
 
 cd "$DATA_DIR"
-use_personal_git_identity "$DATA_DIR"
+if [[ -n "${FINAPP_GIT_NAME:-}" ]]; then
+  git config --local user.name "$FINAPP_GIT_NAME"
+fi
+if [[ -n "${FINAPP_GIT_EMAIL:-}" ]]; then
+  git config --local user.email "$FINAPP_GIT_EMAIL"
+fi
+if [[ -z "$(git config --get user.name || true)" || -z "$(git config --get user.email || true)" ]]; then
+  echo "Git needs a name and email for database snapshots." >&2
+  echo "Rerun $FINAPP_HOME/scripts/configure.sh --force and provide them." >&2
+  exit 1
+fi
 
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
   git pull --rebase
 fi
 
-cat > .gitignore <<'EOF'
-*.db-wal
-*.db-shm
-*.db-journal
-.DS_Store
-EOF
-
+printf '%s\n' '*.db-wal' '*.db-shm' '*.db-journal' '.DS_Store' > .gitignore
 if [[ -f finance.db ]]; then
-  echo "Repo already has finance.db; leaving it in place."
+  echo "The private repo already contains finance.db."
 elif [[ -f "$LIVE_DB" ]]; then
-  echo "Checkpointing and copying live database into the repo."
+  echo "Copying the existing local database into the private repo."
   sqlite3 "$LIVE_DB" "PRAGMA wal_checkpoint(TRUNCATE);"
   cp "$LIVE_DB" finance.db
 else
-  echo "No database yet; the app will create one at $DATA_DIR/finance.db"
+  echo "No existing database; the app will create one."
 fi
 
 git add .gitignore
-if [[ -f finance.db ]]; then
-  git add finance.db
+[[ ! -f finance.db ]] || git add finance.db
+if ! git diff --cached --quiet; then
+  git commit -m "Initial finance database"
 fi
-
-if git diff --cached --quiet; then
-  echo "Nothing new to commit."
-else
-  git commit -m "Initial finance.db snapshot"
-fi
-
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
   git branch -M main
   git push -u origin main
