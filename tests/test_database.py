@@ -5,7 +5,8 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from finance_tracker.db.database import default_database_path
-from finance_tracker.db.models import Account, Currency
+from finance_tracker.db.models import Account, Currency, Setting
+from finance_tracker.db.seed import ensure_defaults
 
 
 def test_database_path_respects_env(monkeypatch, tmp_path):
@@ -27,6 +28,19 @@ def test_database_path_prefers_synced_git_repo(monkeypatch, tmp_path):
     monkeypatch.setenv("FINANCE_DATA_DIR", str(tmp_path))
     (tmp_path / ".git").mkdir()
     assert default_database_path() == tmp_path / "finance.db"
+
+
+def test_theme_defaults_to_system_and_preserves_user_preference(session: Session):
+    ensure_defaults(session)
+    session.flush()
+    assert session.get(Setting, "theme").value == "system"
+
+    session.get(Setting, "theme").value = "pink"
+    session.flush()
+    ensure_defaults(session)
+    session.flush()
+
+    assert session.get(Setting, "theme").value == "pink"
 
 
 def test_schema_contains_core_tables(engine):
