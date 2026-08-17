@@ -370,12 +370,21 @@ class ExpenseDialog(BaseDialog):
         self.priority.addItems(["essential", "important", "luxury", "expendable"])
         self.account = QComboBox()
         payment_method_choices(self.account)
+        self.backup = QComboBox()
+        account_choices(self.backup)
         for label, field in (("Name", self.name), ("Amount", self.amount), ("Currency", self.currency),
                              ("Category", self.category), ("Priority", self.priority),
-                             ("Paid from / charged to", self.account)):
+                             ("Paid from / charged to", self.account), ("Backup bank account", self.backup)):
             form.addRow(label, field)
         self.schedule = ScheduleFields(form)
         self.finish(form)
+
+    def validate(self):
+        backup_id = self.backup.currentData()
+        if backup_id is not None and self.account.currentData() == f"account:{backup_id}":
+            QMessageBox.warning(self, "Choose another backup", "The backup account must differ from the primary account.")
+            return
+        super().validate()
 
 
 class DebtDialog(BaseDialog):
@@ -402,6 +411,7 @@ class DebtDialog(BaseDialog):
         rate_row = QHBoxLayout()
         rate_row.addWidget(self.rate, 1)
         rate_row.addWidget(self.rate_period)
+        self.credit_limit = money_spin()
         self.payment = money_spin()
         self.account = QComboBox()
         account_choices(self.account)
@@ -409,11 +419,16 @@ class DebtDialog(BaseDialog):
                              ("Currency", self.currency)):
             form.addRow(label, field)
         form.addRow("Interest rate", rate_row)
+        form.addRow("Credit limit", self.credit_limit)
         form.addRow("Scheduled payment", self.payment)
         self.payment.setToolTip("Optional. Use for loans with a fixed bill. Leave $0 if you pay this down manually.")
         form.addRow("Paid from (bank)", self.account)
         self.schedule = ScheduleFields(form)
         self.finish(form)
+        self.kind.currentTextChanged.connect(
+            lambda value: form.setRowVisible(self.credit_limit, value == "credit_card")
+        )
+        form.setRowVisible(self.credit_limit, self.kind.currentText() == "credit_card")
 
     def convert_rate_period(self, period):
         if period == self._period:
@@ -788,7 +803,7 @@ class SettingsPage(QWidget):
         self.days.addItems(["7", "30", "60", "90", "180", "365"])
         self.reserve = money_spin()
         self.theme = QComboBox()
-        self.theme.addItems(["system", "dark"])
+        self.theme.addItems(["system", "dark", "light", "pink"])
         form.addRow("Reporting currency", self.currency)
         form.addRow("Default projection days", self.days)
         form.addRow("Cash reserve", self.reserve)

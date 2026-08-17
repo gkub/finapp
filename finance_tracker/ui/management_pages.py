@@ -18,7 +18,7 @@ from finance_tracker.db.models import (
     InvestmentHolding, InvestmentSnapshot, MaterialAsset, OneTimeEvent, RecurringExpense,
     Schedule,
 )
-from finance_tracker.services.balance_service import record_debt_paydown, update_material_asset_value
+from finance_tracker.services.balance_service import available_credit, record_debt_paydown, update_material_asset_value
 from finance_tracker.services.currency_service import upsert_rate
 from finance_tracker.services.investment_service import PriceUnavailable, latest_price, upsert_price, value_holding
 from finance_tracker.services.market_data import MarketDataError, fetch_quote as download_quote, fetch_usd_cad
@@ -338,6 +338,7 @@ class ManagedExpensePage(ManagedPage):
                 currency=dialog.currency.currentText(), schedule_id=schedule.id,
                 category_id=category.id if category else None, priority=dialog.priority.currentText(),
                 payment_account_id=account_id, payment_debt_id=debt_id,
+                backup_account_id=dialog.backup.currentData() if account_id is not None else None,
             ))
         self.refresh()
         self.changed.emit()
@@ -358,6 +359,7 @@ class ManagedExpensePage(ManagedPage):
             dialog.category.setText(category.name if category else "")
             dialog.priority.setCurrentText(item.priority)
             set_payment_method(dialog.account, item.payment_account_id, item.payment_debt_id)
+            set_combo_data(dialog.backup, item.backup_account_id)
             fill_schedule(dialog.schedule, schedule)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
@@ -368,6 +370,7 @@ class ManagedExpensePage(ManagedPage):
             item.category_id = category.id if category else None
             item.priority = dialog.priority.currentText()
             item.payment_account_id, item.payment_debt_id = payment_method_ids(dialog.account)
+            item.backup_account_id = dialog.backup.currentData() if item.payment_account_id is not None else None
             apply_schedule(schedule, dialog.schedule)
         self.refresh()
         self.changed.emit()
@@ -380,9 +383,13 @@ class ManagedExpensePage(ManagedPage):
                 schedule = session.get(Schedule, item.schedule_id)
                 category = session.get(Category, item.category_id) if item.category_id else None
                 dates = occurrences(schedule, date.today(), date.today().replace(year=date.today().year + 2))
+                paid_from = payment_method_label(session, item.payment_account_id, item.payment_debt_id)
+                if item.backup_account_id is not None:
+                    backup = session.get(Account, item.backup_account_id)
+                    if backup is not None:
+                        paid_from += f" → backup {backup.name}"
                 values = (item.name, format_money(item.amount, item.currency), category.name if category else "—",
-                          item.priority.title(),
-                          payment_method_label(session, item.payment_account_id, item.payment_debt_id),
+                          item.priority.title(), paid_from,
                           ScheduleFields.describe(schedule),
                           dates[0].isoformat() if dates else "—", "Active" if item.active else "Disabled")
                 for col, value in enumerate(values):
@@ -409,8 +416,8 @@ class ManagedDebtPage(ManagedPage):
         pay = QPushButton("Pay down")
         pay.clicked.connect(self.pay_down)
         self.controls(box, self.add, self.edit, lambda: self.delete_record("this debt and its snapshots"), extras=(pay,))
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Name", "Type", "Balance", "Rate", "Scheduled", "Schedule", "Status"])
+        self.table = QTableWidget(0, 10)
+        self.table.setHorizontalHeaderLabels(["Name", "Type", "Balance", "Limit", "Available", "Used", "Rate", "Scheduled", "Schedule", "Status"])
         configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.doubleClicked.connect(self.edit)
@@ -428,6 +435,7 @@ class ManagedDebtPage(ManagedPage):
                 name=dialog.name.text().strip(), debt_type=dialog.kind.currentText(),
                 current_balance=Decimal(str(dialog.balance.value())), currency=dialog.currency.currentText(),
                 interest_rate=dialog.annual_rate(),
+                credit_limit=Decimal(str(dialog.credit_limit.value())) if dialog.kind.currentText() == "credit_card" and dialog.credit_limit.value() else None,
                 minimum_payment=Decimal(str(dialog.payment.value())),
                 payment_schedule_id=schedule.id, payment_account_id=dialog.account.currentData(),
             ))
@@ -448,6 +456,7 @@ class ManagedDebtPage(ManagedPage):
             dialog.balance.setValue(float(item.current_balance))
             dialog.currency.setCurrentText(item.currency)
             dialog.set_annual_rate(item.interest_rate)
+            dialog.credit_limit.setValue(float(item.credit_limit or 0))
             dialog.payment.setValue(float(item.minimum_payment or 0))
             set_combo_data(dialog.account, item.payment_account_id)
             fill_schedule(dialog.schedule, schedule)
@@ -458,6 +467,7 @@ class ManagedDebtPage(ManagedPage):
             item.current_balance = Decimal(str(dialog.balance.value()))
             item.currency = dialog.currency.currentText()
             item.interest_rate = dialog.annual_rate()
+            item.credit_limit = Decimal(str(dialog.credit_limit.value())) if item.debt_type == "credit_card" and dialog.credit_limit.value() else None
             item.minimum_payment = Decimal(str(dialog.payment.value()))
             item.payment_account_id = dialog.account.currentData()
             apply_schedule(schedule, dialog.schedule)
@@ -509,12 +519,18 @@ class ManagedDebtPage(ManagedPage):
         with session_scope() as session:
             items = session.scalars(select(Debt).order_by(Debt.active.desc(), Debt.name)).all()
             cad = sum((item.current_balance for item in items if item.active and item.currency == "CAD"), Decimal("0"))
-            self.total.setText(f"CAD debt: {format_money(cad)}")
+            available_cad = sum((available_credit(item) or Decimal("0") for item in items if item.active and item.currency == "CAD"), Decimal("0"))
+            self.total.setText(f"CAD debt: {format_money(cad)}  •  Card credit available: {format_money(available_cad)}")
             self.table.setRowCount(len(items))
             for row, item in enumerate(items):
                 schedule = session.get(Schedule, item.payment_schedule_id) if item.payment_schedule_id else None
+                credit_available = available_credit(item)
+                utilization = (item.current_balance / item.credit_limit * 100) if item.credit_limit else None
                 values = (item.name, item.debt_type.replace("_", " ").title(),
                           format_money(item.current_balance, item.currency),
+                          format_money(item.credit_limit, item.currency) if item.credit_limit is not None else "—",
+                          format_money(credit_available, item.currency) if credit_available is not None else "—",
+                          f"{utilization:.1f}%" if utilization is not None else "—",
                           f"{item.interest_rate * 100:.2f}% / yr" if item.interest_rate is not None else "—",
                           format_money(item.minimum_payment, item.currency) if item.minimum_payment else "—",
                           ScheduleFields.describe(schedule) if schedule else "—",
@@ -659,6 +675,8 @@ class EventDialog(QDialog):
         self.on_date.setCalendarPopup(True)
         self.account = QComboBox()
         payment_method_choices(self.account)
+        self.backup = QComboBox()
+        account_choices(self.backup)
         self.debt = QComboBox()
         debt_choices(self.debt)
         self.from_account = QComboBox()
@@ -671,6 +689,7 @@ class EventDialog(QDialog):
             self.currency.setCurrentText(event.currency)
             self.on_date.setDate(QDate(event.event_date.year, event.event_date.month, event.event_date.day))
             set_payment_method(self.account, event.account_id, event.payment_debt_id)
+            set_combo_data(self.backup, event.backup_account_id)
             set_combo_data(self.debt, event.payment_debt_id)
             set_combo_data(self.from_account, event.account_id)
         form.addRow("Name", self.name)
@@ -679,6 +698,7 @@ class EventDialog(QDialog):
         form.addRow("Currency", self.currency)
         form.addRow("Date", self.on_date)
         form.addRow("Paid from / charged to", self.account)
+        form.addRow("Backup bank account", self.backup)
         form.addRow("Debt", self.debt)
         form.addRow("Paid from", self.from_account)
         self.kind.currentIndexChanged.connect(self.sync_kind)
@@ -691,6 +711,7 @@ class EventDialog(QDialog):
     def sync_kind(self):
         paydown = self.kind.currentData() == "debt_payment"
         self.form.setRowVisible(self.account, not paydown)
+        self.form.setRowVisible(self.backup, not paydown)
         self.form.setRowVisible(self.debt, paydown)
         self.form.setRowVisible(self.from_account, paydown)
 
@@ -713,6 +734,7 @@ class EventDialog(QDialog):
             currency=self.currency.currentText(),
             event_date=self.on_date.date().toPython(),
             account_id=account_id,
+            backup_account_id=self.backup.currentData() if account_id is not None else None,
             payment_debt_id=debt_id,
         )
 

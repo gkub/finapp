@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from finance_tracker.db.database import session_scope
-from finance_tracker.db.models import Account, Debt, InvestmentAccount, InvestmentSnapshot, MaterialAsset
+from finance_tracker.db.models import Account, Debt, InvestmentAccount, InvestmentSnapshot, MaterialAsset, Setting
 from finance_tracker.services.balance_service import (
     current_balance_sheet, estimated_overdraft_interest, overdraft_headroom,
     supports_overdraft, update_account_balance, update_debt_balance,
@@ -29,6 +29,8 @@ from finance_tracker.services.projection_service import (
 from finance_tracker.utils.money import format_money
 from finance_tracker.ui.domain_pages import SettingsPage, configure_table, fit_table_columns, projection_prefs
 from finance_tracker.ui.outlook_page import Outlook
+from finance_tracker.ui.spending_page import SpendingPage
+from finance_tracker.ui.themes import stylesheet
 from finance_tracker.ui.management_pages import (
     EventPage, InvestmentManagementPage, ManagedAssetPage, ManagedDebtPage, ManagedDepositPage,
     ManagedExpensePage, ManagedIncomePage, selected_id,
@@ -101,7 +103,8 @@ class Dashboard(QWidget):
             ("cash", "Operating cash"), ("investments", "Investments"),
             ("material", "Material assets"), ("debt", "Total debt"),
             ("net", "Net worth"), ("low", "30-day minimum"),
-            ("safe", "Safe to spend"), ("proj_cards", "Projected cards"),
+            ("safe", "Safe to spend"), ("available", "Credit available now"),
+            ("proj_cards", "Projected cards"), ("proj_available", "Projected credit available"),
             ("proj_debt", "Projected debt"),
         )):
             self.cards[key] = Card(label)
@@ -109,8 +112,8 @@ class Dashboard(QWidget):
         box.addLayout(grid)
         self.upcoming = QLabel("Upcoming 30 days")
         box.addWidget(self.upcoming)
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Cash", "Investments", "Cards", "Debt"])
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Cash", "Investments", "Cards", "Credit available", "Debt"])
         configure_table(self.table)
         box.addWidget(self.table, 1)
 
@@ -120,18 +123,20 @@ class Dashboard(QWidget):
                 days, reserve, currency = projection_prefs(session)
                 sheet = current_balance_sheet(session, currency)
                 events = generate_events(session, date.today(), date.today() + timedelta(days=days), currency)
-                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts, sheet.investments)
+                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts, sheet.investments, sheet.credit_limit)
                 self.cards["low"].caption.setText(f"{days}-day cash low")
                 self.upcoming.setText(f"Upcoming {days} days")
-                proj_cards, proj_debt = sheet.credit_cards, sheet.debts
+                proj_cards, proj_debt, proj_available = sheet.credit_cards, sheet.debts, sheet.available_credit
                 if rows:
                     proj_cards, proj_debt = rows[-1].running_cards, rows[-1].running_debt
+                    proj_available = rows[-1].running_available_credit
                 values = {
                     "cash": sheet.operating_cash, "investments": sheet.investments,
                     "material": sheet.material_assets, "debt": sheet.debts, "net": sheet.net_worth,
                     "low": lowest_projected_balance(sheet.operating_cash, events),
                     "safe": safe_to_spend(sheet.operating_cash, events, reserve),
-                    "proj_cards": proj_cards, "proj_debt": proj_debt,
+                    "available": sheet.available_credit, "proj_cards": proj_cards,
+                    "proj_available": proj_available, "proj_debt": proj_debt,
                 }
                 for key, value in values.items():
                     self.cards[key].value.setText(format_money(value))
@@ -141,7 +146,7 @@ class Dashboard(QWidget):
                         event.date.isoformat(), event.description,
                         format_money(event.reporting_amount), format_money(event.running_balance),
                         format_money(event.running_investments), format_money(event.running_cards),
-                        format_money(event.running_debt),
+                        format_money(event.running_available_credit), format_money(event.running_debt),
                     )):
                         self.table.setItem(row, col, QTableWidgetItem(value))
                 fit_table_columns(self.table)
@@ -323,7 +328,10 @@ class Accounts(QWidget):
         dialog = AccountDialog(parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             with session_scope() as session:
-                session.add(Account(**dialog.values()))
+                account = Account(**dialog.values())
+                session.add(account)
+                session.flush()
+                update_account_balance(session, account, account.current_balance, date.today())
             self.refresh()
             self.changed.emit()
 
@@ -340,8 +348,13 @@ class Accounts(QWidget):
             return
         with session_scope() as session:
             account = session.get(Account, ident)
-            for key, value in dialog.values().items():
-                setattr(account, key, value)
+            values = dialog.values()
+            old_balance = account.current_balance
+            for key, value in values.items():
+                if key != "current_balance":
+                    setattr(account, key, value)
+            if values["current_balance"] != old_balance:
+                update_account_balance(session, account, values["current_balance"], date.today())
         self.refresh()
         self.changed.emit()
 
@@ -365,14 +378,14 @@ class CashFlow(QWidget):
         box.addLayout(controls)
         cards = QHBoxLayout()
         self.committed, self.minimum, self.safe = Card("Committed cash"), Card("Minimum cash"), Card("Safe to spend")
-        self.proj_cards, self.proj_debt = Card("Projected cards"), Card("Projected debt")
-        self.flow_cards = (self.committed, self.minimum, self.safe, self.proj_cards, self.proj_debt)
+        self.proj_cards, self.proj_available, self.proj_debt = Card("Projected cards"), Card("Credit available"), Card("Projected debt")
+        self.flow_cards = (self.committed, self.minimum, self.safe, self.proj_cards, self.proj_available, self.proj_debt)
         for card in self.flow_cards:
             cards.addWidget(card)
         box.addLayout(cards)
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(
-            ["Date", "Description", "Type", "Amount", "Currency", "Cash", "Investments", "Cards", "Debt"],
+            ["Date", "Description", "Type", "Amount", "Currency", "Funding", "Cash", "Investments", "Cards", "Credit available", "Debt"],
         )
         configure_table(self.table)
         box.addWidget(self.table)
@@ -391,23 +404,25 @@ class CashFlow(QWidget):
                 horizon = int(self.days.currentText())
                 sheet = current_balance_sheet(session, currency)
                 events = generate_events(session, date.today(), date.today() + timedelta(days=horizon), currency)
-                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts, sheet.investments)
-                self.committed.value.setText(format_money(committed_cash(events)))
+                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts, sheet.investments, sheet.credit_limit)
+                self.committed.value.setText(format_money(committed_cash(rows)))
                 self.minimum.value.setText(format_money(lowest_projected_balance(sheet.operating_cash, events)))
                 self.safe.value.setText(format_money(safe_to_spend(sheet.operating_cash, events, reserve)))
                 if rows:
                     self.proj_cards.value.setText(format_money(rows[-1].running_cards))
+                    self.proj_available.value.setText(format_money(rows[-1].running_available_credit))
                     self.proj_debt.value.setText(format_money(rows[-1].running_debt))
                 else:
                     self.proj_cards.value.setText(format_money(sheet.credit_cards))
+                    self.proj_available.value.setText(format_money(sheet.available_credit))
                     self.proj_debt.value.setText(format_money(sheet.debts))
                 self.table.setRowCount(len(rows))
                 for row, event in enumerate(rows):
                     values = (
                         event.date.isoformat(), event.description, event.event_type.replace("_", " ").title(),
-                        format_money(event.amount, event.currency), event.currency,
+                        format_money(event.amount, event.currency), event.currency, event.funding_summary or "—",
                         format_money(event.running_balance), format_money(event.running_investments),
-                        format_money(event.running_cards), format_money(event.running_debt),
+                        format_money(event.running_cards), format_money(event.running_available_credit), format_money(event.running_debt),
                     )
                     for col, value in enumerate(values):
                         self.table.setItem(row, col, QTableWidgetItem(value))
@@ -543,7 +558,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Personal Finance Tracker")
         self.resize(1180, 760)
         self.setMinimumSize(900, 600)
-        self.setStyleSheet(STYLE)
+        self.apply_theme()
         root = QWidget()
         outer = QHBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -560,7 +575,7 @@ class MainWindow(QMainWindow):
         nav.addSpacing(18)
         self.stack = QStackedWidget()
         definitions = [
-            ("Dashboard", Dashboard()), ("Cash Flow", CashFlow()), ("Outlook", Outlook()),
+            ("Dashboard", Dashboard()), ("Cash Flow", CashFlow()), ("Spending", SpendingPage()), ("Outlook", Outlook()),
             ("Accounts", Accounts()),
             ("Income", ManagedIncomePage()), ("Deposits", ManagedDepositPage()),
             ("Recurring Expenses", ManagedExpensePage()),
@@ -600,7 +615,14 @@ class MainWindow(QMainWindow):
             button.setChecked(i == index)
         self.pages[index].refresh()
 
+    def apply_theme(self):
+        with session_scope() as session:
+            setting = session.get(Setting, "theme")
+            name = setting.value if setting is not None else "system"
+        self.setStyleSheet(stylesheet(name))
+
     def refresh_all(self):
+        self.apply_theme()
         for page in self.pages:
             if hasattr(page, "apply_settings"):
                 page.apply_settings()

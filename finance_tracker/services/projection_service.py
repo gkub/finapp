@@ -29,6 +29,15 @@ class ProjectionEvent:
     running_investments: Decimal = Decimal("0")
     investment_delta: Decimal = Decimal("0")
     category: str | None = None
+    debt_id: int | None = None
+    starting_debt_balance: Decimal | None = None
+    backup_account_id: int | None = None
+    primary_starting_balance: Decimal | None = None
+    backup_starting_balance: Decimal | None = None
+    primary_account_name: str | None = None
+    backup_account_name: str | None = None
+    funding_summary: str | None = None
+    running_available_credit: Decimal = Decimal("0")
 
 
 _ORDER = {"income": 0, "deposit": 1, "adjustment": 1, "expense": 2, "card_charge": 2, "debt_payment": 3}
@@ -68,6 +77,25 @@ def _converted(amount: Decimal, currency: str, reporting_currency: str, session:
         return convert(amount, currency, reporting_currency, session, on_date)
     except RateUnavailable:
         return None
+
+
+def _account_balance(session: Session, account_id: int | None, reporting_currency: str, on_date: date) -> Decimal | None:
+    account = session.get(Account, account_id) if account_id is not None else None
+    if account is None:
+        return None
+    return _converted(account.current_balance, account.currency, reporting_currency, session, on_date)
+
+
+def _account_name(session: Session, account_id: int | None) -> str | None:
+    account = session.get(Account, account_id) if account_id is not None else None
+    return account.name if account is not None else None
+
+
+def _debt_balance(session: Session, debt_id: int | None, reporting_currency: str, on_date: date) -> Decimal | None:
+    debt = session.get(Debt, debt_id) if debt_id is not None else None
+    if debt is None:
+        return None
+    return _converted(debt.current_balance, debt.currency, reporting_currency, session, on_date)
 
 
 def _occurrence_dates(schedule: Schedule | None, range_start: date, range_end: date) -> list[date]:
@@ -127,9 +155,18 @@ def generate_events(
             charged = expense.payment_debt_id is not None
             label = f"{expense.name} (card)" if charged else expense.name
             charge_type = _debt_type(session, expense.payment_debt_id) if charged else None
-            events.append(ProjectionEvent(on_date, label, native, expense.currency, amount,
-                                          "card_charge" if charged else "expense", expense.id,
-                                          expense.payment_account_id, charge_type))
+            events.append(ProjectionEvent(
+                on_date, label, native, expense.currency, amount,
+                "card_charge" if charged else "expense", expense.id,
+                expense.payment_account_id, charge_type,
+                debt_id=expense.payment_debt_id,
+                starting_debt_balance=_debt_balance(session, expense.payment_debt_id, reporting_currency, on_date),
+                backup_account_id=expense.backup_account_id,
+                primary_starting_balance=_account_balance(session, expense.payment_account_id, reporting_currency, on_date),
+                backup_starting_balance=_account_balance(session, expense.backup_account_id, reporting_currency, on_date),
+                primary_account_name=_account_name(session, expense.payment_account_id),
+                backup_account_name=_account_name(session, expense.backup_account_id),
+            ))
 
     debts = session.scalars(select(Debt).where(
         Debt.active.is_(True),
@@ -143,8 +180,12 @@ def generate_events(
             amount = _converted(native, debt.currency, reporting_currency, session, on_date)
             if amount is None:
                 continue
-            events.append(ProjectionEvent(on_date, debt.name, native, debt.currency, amount,
-                                          "debt_payment", debt.id, debt.payment_account_id, debt.debt_type))
+            events.append(ProjectionEvent(
+                on_date, debt.name, native, debt.currency, amount,
+                "debt_payment", debt.id, debt.payment_account_id, debt.debt_type,
+                debt_id=debt.id,
+                starting_debt_balance=_debt_balance(session, debt.id, reporting_currency, on_date),
+            ))
 
     one_time = session.scalars(select(OneTimeEvent).where(OneTimeEvent.event_date.between(range_start, range_end))).all()
     for item in one_time:
@@ -158,6 +199,8 @@ def generate_events(
             events.append(ProjectionEvent(
                 item.event_date, item.name, native, item.currency, amount,
                 "debt_payment", item.id, item.account_id, _debt_type(session, item.payment_debt_id),
+                debt_id=item.payment_debt_id,
+                starting_debt_balance=_debt_balance(session, item.payment_debt_id, reporting_currency, item.event_date),
             ))
             continue
         native = item.amount if item.event_type == "income" else -item.amount
@@ -167,9 +210,17 @@ def generate_events(
         charged = item.payment_debt_id is not None and item.event_type != "income"
         label = f"{item.name} (card)" if charged else item.name
         charge_type = _debt_type(session, item.payment_debt_id) if charged else None
-        events.append(ProjectionEvent(item.event_date, label, native, item.currency, amount,
-                                      "card_charge" if charged else item.event_type, item.id,
-                                      item.account_id, charge_type))
+        events.append(ProjectionEvent(
+            item.event_date, label, native, item.currency, amount,
+            "card_charge" if charged else item.event_type, item.id, item.account_id, charge_type,
+            debt_id=item.payment_debt_id,
+            starting_debt_balance=_debt_balance(session, item.payment_debt_id, reporting_currency, item.event_date),
+            backup_account_id=item.backup_account_id,
+            primary_starting_balance=_account_balance(session, item.account_id, reporting_currency, item.event_date),
+            backup_starting_balance=_account_balance(session, item.backup_account_id, reporting_currency, item.event_date),
+            primary_account_name=_account_name(session, item.account_id),
+            backup_account_name=_account_name(session, item.backup_account_id),
+        ))
 
     return sorted(events, key=lambda event: (event.date, _ORDER.get(event.event_type, 4), event.description.casefold(), event.source_record_id))
 
@@ -180,27 +231,76 @@ def project(
     starting_cards: Decimal = Decimal("0"),
     starting_debt: Decimal = Decimal("0"),
     starting_investments: Decimal = Decimal("0"),
+    starting_credit_limit: Decimal = Decimal("0"),
 ) -> list[ProjectionEvent]:
+    """Project cash and liabilities, capping every debt at zero owed."""
     cash, cards, debt, investments = starting_cash, starting_cards, starting_debt, starting_investments
+    remaining_debts: dict[int, Decimal] = {}
+    account_balances: dict[int, Decimal] = {}
     projected: list[ProjectionEvent] = []
-    for event in events:
-        if event.event_type in _CASH_EVENT_TYPES:
-            cash += event.reporting_amount
+    for original in events:
+        event = original
+        if event.debt_id is not None and event.starting_debt_balance is not None:
+            remaining_debts.setdefault(event.debt_id, max(event.starting_debt_balance, Decimal("0")))
+        if event.account_id is not None and event.primary_starting_balance is not None:
+            account_balances.setdefault(event.account_id, event.primary_starting_balance)
+        if event.backup_account_id is not None and event.backup_starting_balance is not None:
+            account_balances.setdefault(event.backup_account_id, event.backup_starting_balance)
+
         if event.event_type == "card_charge":
             charged = -event.reporting_amount
             debt += charged
+            if event.debt_id is not None:
+                remaining_debts[event.debt_id] = remaining_debts.get(event.debt_id, Decimal("0")) + charged
             if event.debt_type == "credit_card":
                 cards += charged
         elif event.event_type == "debt_payment":
-            paid = -event.reporting_amount
-            debt -= paid
+            requested = max(-event.reporting_amount, Decimal("0"))
+            if event.debt_id is not None and event.debt_id in remaining_debts:
+                paid = min(requested, remaining_debts[event.debt_id])
+                remaining_debts[event.debt_id] -= paid
+            elif event.debt_type == "credit_card":
+                paid = min(requested, cards)
+            else:
+                paid = min(requested, debt)
+            debt = max(debt - paid, Decimal("0"))
             if event.debt_type == "credit_card":
-                cards -= paid
+                cards = max(cards - paid, Decimal("0"))
+            native = event.amount
+            if requested and paid != requested:
+                native = event.amount * paid / requested
+            event = replace(event, amount=native, reporting_amount=-paid)
+
+        if event.event_type in _CASH_EVENT_TYPES:
+            cash += event.reporting_amount
+
+        funding_summary = event.funding_summary
+        if event.event_type in {"expense", "adjustment"} and event.account_id is not None:
+            charge = max(-event.reporting_amount, Decimal("0"))
+            primary_before = account_balances.get(event.account_id)
+            if primary_before is not None:
+                if event.backup_account_id is not None:
+                    primary_paid = min(charge, max(primary_before, Decimal("0")))
+                    backup_paid = charge - primary_paid
+                    account_balances[event.account_id] = primary_before - primary_paid
+                    backup_before = account_balances.get(event.backup_account_id, Decimal("0"))
+                    account_balances[event.backup_account_id] = backup_before - backup_paid
+                    primary_name = event.primary_account_name or "primary"
+                    backup_name = event.backup_account_name or "backup"
+                    funding_summary = f"{primary_name} {primary_paid:.2f}; {backup_name} {backup_paid:.2f}"
+                else:
+                    account_balances[event.account_id] = primary_before - charge
+                    funding_summary = f"{event.primary_account_name or 'primary'} {charge:.2f}"
+
         investments += event.investment_delta
         projected.append(replace(
-            event, running_balance=cash, running_cards=cards, running_debt=debt, running_investments=investments,
+            event, running_balance=cash, running_cards=max(cards, Decimal("0")),
+            running_debt=max(debt, Decimal("0")), running_investments=investments,
+            funding_summary=funding_summary,
+            running_available_credit=max(starting_credit_limit - cards, Decimal("0")),
         ))
     return projected
+
 
 
 def lowest_projected_balance(starting_cash: Decimal, events: list[ProjectionEvent]) -> Decimal:

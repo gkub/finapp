@@ -24,6 +24,8 @@ class BalanceSheet:
     debts: Decimal
     net_worth: Decimal
     credit_cards: Decimal
+    credit_limit: Decimal
+    available_credit: Decimal
 
 
 def operating_cash(session: Session, reporting_currency: str = "CAD", on_date: date | None = None) -> Decimal:
@@ -66,6 +68,7 @@ def current_balance_sheet(session: Session, reporting_currency: str = "CAD", on_
     debts = session.scalars(select(Debt).where(Debt.active.is_(True))).all()
     total_debt = Decimal("0")
     cards = Decimal("0")
+    card_limits = Decimal("0")
     for item in debts:
         try:
             value = convert(item.current_balance, item.currency, reporting_currency, session, on_date)
@@ -74,6 +77,11 @@ def current_balance_sheet(session: Session, reporting_currency: str = "CAD", on_
         total_debt += value
         if item.debt_type == "credit_card":
             cards += value
+            if item.credit_limit is not None:
+                try:
+                    card_limits += convert(item.credit_limit, item.currency, reporting_currency, session, on_date)
+                except RateUnavailable:
+                    pass
     cash = operating_cash(session, reporting_currency, on_date)
     stuff = Decimal("0")
     for item in session.scalars(select(MaterialAsset).where(
@@ -85,8 +93,15 @@ def current_balance_sheet(session: Session, reporting_currency: str = "CAD", on_
             continue
     return BalanceSheet(
         cash, ordinary, investments, stuff, total_debt,
-        ordinary + investments + stuff - total_debt, cards,
+        ordinary + investments + stuff - total_debt, cards, card_limits,
+        max(card_limits - cards, Decimal("0")),
     )
+
+
+def available_credit(debt: Debt) -> Decimal | None:
+    if debt.debt_type != "credit_card" or debt.credit_limit is None:
+        return None
+    return max(debt.credit_limit - debt.current_balance, Decimal("0"))
 
 
 def update_account_balance(session: Session, account: Account, balance: Decimal, snapshot_date: date) -> BalanceSnapshot:
@@ -97,6 +112,7 @@ def update_account_balance(session: Session, account: Account, balance: Decimal,
 
 
 def update_debt_balance(session: Session, debt: Debt, balance: Decimal, snapshot_date: date) -> DebtSnapshot:
+    balance = max(balance, Decimal("0"))
     debt.current_balance = balance
     snapshot = DebtSnapshot(debt_id=debt.id, balance=balance, snapshot_date=snapshot_date)
     session.add(snapshot)
@@ -138,9 +154,11 @@ def record_debt_paydown(
         event.account_id = account.id if account is not None else None
         event.currency = debt.currency
     if on_date <= today and not event.applied:
+        effective = min(amount, debt.current_balance)
+        event.amount = effective
         if account is not None:
-            update_account_balance(session, account, account.current_balance - amount, on_date)
-        update_debt_balance(session, debt, debt.current_balance - amount, on_date)
+            update_account_balance(session, account, account.current_balance - effective, on_date)
+        update_debt_balance(session, debt, debt.current_balance - effective, on_date)
         event.applied = True
     return event
 

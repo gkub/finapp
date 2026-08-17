@@ -73,6 +73,11 @@ def _add_missing_columns(engine: Engine) -> None:
         ("recurring_expenses", "payment_debt_id", "INTEGER REFERENCES debts(id)"),
         ("one_time_events", "payment_debt_id", "INTEGER REFERENCES debts(id)"),
         ("one_time_events", "applied", "INTEGER DEFAULT 0"),
+        ("debts", "credit_limit", "NUMERIC(20, 4)"),
+        ("recurring_expenses", "backup_account_id", "INTEGER REFERENCES accounts(id)"),
+        ("recurring_expenses", "funding_strategy", "VARCHAR(32) DEFAULT 'primary_then_backup'"),
+        ("one_time_events", "backup_account_id", "INTEGER REFERENCES accounts(id)"),
+        ("one_time_events", "funding_strategy", "VARCHAR(32) DEFAULT 'primary_then_backup'"),
     )
     with engine.begin() as conn:
         inspector = inspect(conn)

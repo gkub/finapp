@@ -13,7 +13,7 @@ Use this document to resume work with Codex on another computer.
 
 ## Current implementation
 
-The project is a Python 3, PySide6, SQLAlchemy, and SQLite Linux desktop app.
+The project is a Python 3, PySide6, SQLAlchemy, and SQLite Linux/macOS desktop app.
 
 Implemented:
 
@@ -26,10 +26,14 @@ Implemented:
 - Optional overdraft limits, annual rates, headroom, and estimated interest
 - Income, recurring expenses, debts, and one-time events
 - Cash-flow events, running balances, committed cash, minimum cash, and safe-to-spend
+- Spending reconciliation from balance snapshots, optional aggregate check-ins, and period comparisons
+- Credit limits, available credit, utilization, and zero-floor debt projections
+- Primary/backup account funding for PayPal-style payments
+- Dark, light, and accessible pastel-pink themes
 - Account/debt snapshots and balance updates
 - Investment accounts, holdings, manual prices, and valuation
 - Operating-cash, investment, debt, and net-worth calculations
-- Dashboard, Cash Flow, Accounts, Income, Recurring Expenses, Debts,
+- Dashboard, Cash Flow, Spending, Outlook, Accounts, Income, Recurring Expenses, Debts,
   One-Time Events, Investments, Update Finances, and Settings screens
 - Add/edit/disable/delete workflows with confirmations and reference protection
 - Local SQLite backup from Settings
@@ -64,15 +68,14 @@ Tests:
 env -u __PYVENV_LAUNCHER__ QT_QPA_PLATFORM=offscreen .venv/bin/pytest
 ```
 
-Last verified state: `13 passed`, and all 10 navigation screens loaded in a
-headless GUI check.
+Last verified state: `46 passed`, including GUI, migration, spending, credit, funding, and theme-contrast coverage.
 
 ## Moving personal data
 
-The database is not committed to Git. It normally lives at:
+With private sync, the database lives in its own private Git repository at:
 
 ```text
-~/.local/share/personal-finance-tracker/finance.db
+~/finance-data/finance.db
 ```
 
 To move it safely:
@@ -102,8 +105,7 @@ To move it safely:
 - The GUI code grew quickly and should be broken into smaller page/dialog modules.
 - Income, expense, and debt deletion may leave unused schedule rows. This is harmless
   but should eventually be cleaned up transactionally.
-- Settings are stored, but reporting currency, reserve, default horizon, and theme
-  are not yet consistently consumed by every screen.
+- Some settings and reporting-currency edge cases still need consistency checks across every screen.
 - Debt balance changes made through debt editing do not yet create a debt snapshot.
 - Investment snapshots and a dedicated bulk investment-update workflow are incomplete.
 - USD reporting requires a manually entered exchange rate, but there is no polished FX-rate UI yet.
@@ -112,15 +114,13 @@ To move it safely:
 
 ## Recommended next steps
 
-1. Add proper migrations and a schema-version bootstrap path.
-2. Make all settings effective throughout services and screens.
-3. Add a manual exchange-rate management screen.
-4. Add debt and investment bulk-update workflows that always create snapshots.
-5. Improve investment account totals and price history presentation.
-6. Add forms for specific-date schedules and optional start/end dates.
-7. Add repository/service tests for CRUD deletion, foreign-key protection, and snapshots.
-8. Refactor the GUI into one module per domain page.
-9. Add the projected cash-balance chart from the specification.
+1. Add native Windows onboarding, packaging, and a desktop shortcut.
+2. Add drag-and-drop bank CSV imports, remembered mappings, and duplicate detection.
+3. Add business account purpose and a business overview after PayPal funding settles.
+4. Replace lightweight additive migrations with a formal versioned migration system.
+5. Add debt and investment bulk-update workflows that always create snapshots.
+6. Refactor the GUI into one module per domain page.
+7. Add projected cash-balance and spending-history charts.
 
 ## Key files
 

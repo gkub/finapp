@@ -142,6 +142,8 @@ class RecurringExpense(Base):
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     priority: Mapped[str] = mapped_column(String(24), default="important")
     payment_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    backup_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    funding_strategy: Mapped[str] = mapped_column(String(32), default="primary_then_backup")
     payment_debt_id: Mapped[int | None] = mapped_column(ForeignKey("debts.id"))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     start_date: Mapped[date | None] = mapped_column(Date)
@@ -157,6 +159,7 @@ class Debt(Base):
     current_balance: Mapped[Decimal] = mapped_column(MONEY)
     currency: Mapped[str] = mapped_column(ForeignKey("currencies.code"))
     interest_rate: Mapped[Decimal | None] = mapped_column(RATE)
+    credit_limit: Mapped[Decimal | None] = mapped_column(MONEY)
     minimum_payment: Mapped[Decimal | None] = mapped_column(MONEY)
     payment_schedule_id: Mapped[int | None] = mapped_column(ForeignKey("schedules.id"))
     payment_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
@@ -184,6 +187,8 @@ class OneTimeEvent(Base):
     currency: Mapped[str] = mapped_column(ForeignKey("currencies.code"))
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    backup_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    funding_strategy: Mapped[str] = mapped_column(String(32), default="primary_then_backup")
     payment_debt_id: Mapped[int | None] = mapped_column(ForeignKey("debts.id"))
     event_type: Mapped[str] = mapped_column(String(16))
     applied: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -279,6 +284,22 @@ class MaterialAssetSnapshot(Base):
     material_asset_id: Mapped[int] = mapped_column(ForeignKey("material_assets.id", ondelete="CASCADE"))
     value: Mapped[Decimal] = mapped_column(MONEY)
     snapshot_date: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SpendingEntry(Base):
+    """Optional aggregate or notable spending record; itemized entry is never required."""
+    __tablename__ = "spending_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entry_date: Mapped[date] = mapped_column(Date)
+    period_start: Mapped[date | None] = mapped_column(Date)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    amount: Mapped[Decimal] = mapped_column(MONEY)
+    currency: Mapped[str] = mapped_column(ForeignKey("currencies.code"), default="CAD")
+    entry_type: Mapped[str] = mapped_column(String(32), default="general")
+    description: Mapped[str | None] = mapped_column(String(160))
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

@@ -12,7 +12,7 @@ def test_main_window_constructs(engine):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     assert window.windowTitle() == "Personal Finance Tracker"
-    assert window.stack.count() == 13
+    assert window.stack.count() == 14
     assert "Outlook" in [button.text() for button in window.buttons]
     assert "Deposits" in [button.text() for button in window.buttons]
     assert "Assets" in [button.text() for button in window.buttons]
@@ -91,7 +91,8 @@ def test_debts_page_has_pay_down_and_scheduled_payment(engine):
     page = next(item for item in window.pages if isinstance(item, ManagedDebtPage))
     labels = [child.text() for child in page.findChildren(QPushButton)]
     assert "Pay down" in labels
-    assert page.table.horizontalHeaderItem(4).text() == "Scheduled"
+    headers = [page.table.horizontalHeaderItem(i).text() for i in range(page.table.columnCount())]
+    assert {"Available", "Used", "Scheduled"} <= set(headers)
     dialog = DebtDialog()
     assert "Optional" in dialog.payment.toolTip()
     dialog.close()

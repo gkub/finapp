@@ -30,6 +30,7 @@ _ROWS = (
     ("investments", "Investments"),
     ("material", "Material assets"),
     ("cards", "Cards owed"),
+    ("credit_available", "Credit available"),
     ("debt", "Total debt"),
     ("net_worth", "Net worth"),
 )
@@ -164,12 +165,12 @@ class Outlook(QWidget):
                     sheet.operating_cash, sheet.credit_cards, sheet.debts, sheet.investments, sheet.net_worth,
                 )
                 baseline = project(
-                    sheet.operating_cash, baseline_events, sheet.credit_cards, sheet.debts, sheet.investments,
+                    sheet.operating_cash, baseline_events, sheet.credit_cards, sheet.debts, sheet.investments, sheet.credit_limit,
                 )
                 if paused:
                     paused_events = generate_events(session, date.today(), horizon_end, currency, paused)
                     simulated = project(
-                        sheet.operating_cash, paused_events, sheet.credit_cards, sheet.debts, sheet.investments,
+                        sheet.operating_cash, paused_events, sheet.credit_cards, sheet.debts, sheet.investments, sheet.credit_limit,
                     )
                 else:
                     simulated = baseline
@@ -193,6 +194,13 @@ class Outlook(QWidget):
             "investments": (origin.investments, as_of.investments, change.investments, paused_as_of.investments, versus.investments),
             "material": (material, material, Decimal("0"), material, Decimal("0")),
             "cards": (origin.cards, as_of.cards, change.cards, paused_as_of.cards, versus.cards),
+            "credit_available": (
+                max(sheet.credit_limit - origin.cards, Decimal("0")),
+                max(sheet.credit_limit - as_of.cards, Decimal("0")),
+                -(change.cards),
+                max(sheet.credit_limit - paused_as_of.cards, Decimal("0")),
+                -(versus.cards),
+            ),
             "debt": (origin.debt, as_of.debt, change.debt, paused_as_of.debt, versus.debt),
             "net_worth": (origin.net_worth, as_of.net_worth, change.net_worth, paused_as_of.net_worth, versus.net_worth),
         }

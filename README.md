@@ -15,6 +15,18 @@ The first run installs Python dependencies and asks how to store data. Later run
 open the app directly. When private GitHub sync is enabled, opening pulls the
 latest database and closing commits and pushes it.
 
+## Current highlights
+
+- Spending estimates from periodic balance updates, with optional broad check-ins
+- Credit limits, available credit, utilization, and projections that stop at $0 owed
+- PayPal-style primary and backup account funding
+- Dark, light, and accessible pastel-pink themes in Settings
+- Signed account balances, overdraft limits, and overdraft interest rates
+
+For useful spending estimates, use **Update Finances** periodically. The app
+reconciles the change between two balance snapshots against known income, bills,
+and card activity; individual purchase entry remains optional.
+
 > Only open a synced database on one computer at a time. SQLite database commits
 > do not merge; if two computers edit concurrently, the last push can conflict.
 
