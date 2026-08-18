@@ -119,3 +119,84 @@ def test_scheduled_forecast_uses_events_instead_of_snapshot_pace(session):
     assert forecast.current_value == Decimal("1000.0000")
     assert forecast.future_value == Decimal("1500.0000")
     assert forecast.change == Decimal("500.0000")
+
+
+def test_historical_metrics_keep_partial_debt_history_out_of_totals(session):
+    from finance_tracker.services.analytics_service import historical_metrics
+
+    session.add(Currency(code="CAD", name="Canadian Dollar", symbol="$"))
+    session.flush()
+    tracked_cash = Account(name="Tracked cash", account_type="checking", currency="CAD",
+                           current_balance=Decimal("1200"))
+    untracked_cash = Account(name="Untracked cash", account_type="checking", currency="CAD",
+                             current_balance=Decimal("500"))
+    tracked_debt = Debt(name="Tracked debt", debt_type="credit_card", currency="CAD",
+                        current_balance=Decimal("800"))
+    untracked_debt = Debt(name="Untracked debt", debt_type="other", currency="CAD",
+                          current_balance=Decimal("500"))
+    session.add_all([tracked_cash, untracked_cash, tracked_debt, untracked_debt])
+    session.flush()
+    session.add_all([
+        BalanceSnapshot(account_id=tracked_cash.id, balance=Decimal("1000"), currency="CAD",
+                        snapshot_date=date(2026, 8, 13)),
+        BalanceSnapshot(account_id=tracked_cash.id, balance=Decimal("1200"), currency="CAD",
+                        snapshot_date=date(2026, 8, 14)),
+        DebtSnapshot(debt_id=tracked_debt.id, balance=Decimal("1000"), snapshot_date=date(2026, 8, 13)),
+        DebtSnapshot(debt_id=tracked_debt.id, balance=Decimal("800"), snapshot_date=date(2026, 8, 14)),
+    ])
+    session.flush()
+
+    metrics = historical_metrics(session, date(2026, 7, 15), date(2026, 8, 14))
+    cash = next(item for item in metrics if item.key == "cash")
+    debt_total = next(item for item in metrics if item.key == "debt_total")
+    tracked = next(item for item in metrics if item.key == f"debt:{tracked_debt.id}")
+    untracked = next(item for item in metrics if item.key == f"debt:{untracked_debt.id}")
+    net_worth = next(item for item in metrics if item.key == "net_worth")
+
+    assert cash.start_value is None
+    assert cash.coverage == "Incomplete: 1/2 tracked"
+    assert debt_total.start_value is None
+    assert debt_total.coverage == "Incomplete: 1/2 tracked"
+    assert tracked.balance_change == Decimal("-200.0000")
+    assert tracked.improvement == Decimal("200.0000")
+    assert tracked.monthly_pace is None
+    assert untracked.start_value is None
+    assert untracked.quality == "No history"
+    assert net_worth.start_value is None
+
+
+def test_forecast_interval_reconciles_payments_charges_and_boundaries(session):
+    from finance_tracker.services.analytics_service import forecast_interval
+
+    session.add(Currency(code="CAD", name="Canadian Dollar", symbol="$"))
+    session.flush()
+    account = Account(name="Chequing", account_type="checking", currency="CAD",
+                      current_balance=Decimal("1000"))
+    debt = Debt(name="Card", debt_type="credit_card", currency="CAD",
+                current_balance=Decimal("1000"), credit_limit=Decimal("5000"))
+    session.add_all([account, debt])
+    session.flush()
+    session.add_all([
+        OneTimeEvent(name="Before-window payment", event_date=date(2026, 8, 10), amount=Decimal("100"),
+                     currency="CAD", event_type="debt_payment", account_id=account.id,
+                     payment_debt_id=debt.id),
+        OneTimeEvent(name="New purchase", event_date=date(2026, 8, 20), amount=Decimal("150"),
+                     currency="CAD", event_type="expense", payment_debt_id=debt.id),
+        OneTimeEvent(name="Window payment", event_date=date(2026, 8, 25), amount=Decimal("300"),
+                     currency="CAD", event_type="debt_payment", account_id=account.id,
+                     payment_debt_id=debt.id),
+    ])
+    session.flush()
+
+    result = forecast_interval(session, date(2026, 8, 15), date(2026, 8, 31), today=date(2026, 8, 1))
+    row = result.debts[0]
+    debt_total = next(item for item in result.summary if item.key == "debt")
+
+    assert row.start_balance == Decimal("900.0000")
+    assert row.payments == Decimal("300.0000")
+    assert row.charges == Decimal("150.0000")
+    assert row.net_reduction == Decimal("150.0000")
+    assert row.end_balance == Decimal("750.0000")
+    assert debt_total.start_value == Decimal("900.0000")
+    assert debt_total.end_value == Decimal("750.0000")
+    assert debt_total.improvement == Decimal("150.0000")
