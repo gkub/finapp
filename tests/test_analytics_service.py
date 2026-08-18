@@ -1,8 +1,8 @@
 from datetime import date
 from decimal import Decimal
 
-from finance_tracker.db.models import Account, BalanceSnapshot, Currency, Debt, DebtSnapshot
-from finance_tracker.services.analytics_service import progress_metrics
+from finance_tracker.db.models import Account, BalanceSnapshot, Currency, Debt, DebtSnapshot, OneTimeEvent
+from finance_tracker.services.analytics_service import progress_metrics, scheduled_metrics
 
 
 def test_progress_metrics_calculate_savings_and_debt_pace(session):
@@ -78,3 +78,43 @@ def test_partial_debt_history_is_labeled_and_does_not_fake_net_worth(session):
     assert metrics["debt"].covered_entities == 1
     assert metrics["debt"].total_entities == 2
     assert not metrics["net_worth"].available
+
+
+def test_one_day_balance_change_is_not_annualized(session):
+    session.add(Currency(code="CAD", name="Canadian Dollar", symbol="$"))
+    session.flush()
+    account = Account(name="Chequing", account_type="checking", currency="CAD", current_balance=Decimal("1000"))
+    session.add(account)
+    session.flush()
+    session.add_all([
+        BalanceSnapshot(account_id=account.id, balance=Decimal("0"), currency="CAD", snapshot_date=date(2026, 8, 13)),
+        BalanceSnapshot(account_id=account.id, balance=Decimal("1000"), currency="CAD", snapshot_date=date(2026, 8, 14)),
+    ])
+    session.flush()
+
+    metric = next(item for item in progress_metrics(
+        session, date(2026, 7, 15), date(2026, 8, 14), 24,
+    ) if item.key == "cash")
+
+    assert not metric.available
+    assert metric.monthly_pace is None
+    assert metric.projected_value is None
+
+
+def test_scheduled_forecast_uses_events_instead_of_snapshot_pace(session):
+    session.add(Currency(code="CAD", name="Canadian Dollar", symbol="$"))
+    session.flush()
+    account = Account(name="Chequing", account_type="checking", currency="CAD", current_balance=Decimal("1000"))
+    session.add(account)
+    session.flush()
+    session.add(OneTimeEvent(
+        name="Refund", event_date=date(2026, 9, 1), amount=Decimal("500"),
+        currency="CAD", event_type="income", account_id=account.id,
+    ))
+    session.flush()
+
+    forecast = scheduled_metrics(session, date(2026, 8, 1), 3)["cash"]
+
+    assert forecast.current_value == Decimal("1000.0000")
+    assert forecast.future_value == Decimal("1500.0000")
+    assert forecast.change == Decimal("500.0000")

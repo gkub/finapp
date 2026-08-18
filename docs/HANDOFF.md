@@ -69,7 +69,7 @@ Tests:
 env -u __PYVENV_LAUNCHER__ QT_QPA_PLATFORM=offscreen .venv/bin/pytest
 ```
 
-Last verified state: `50 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
+Last verified state: `52 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
 
 ## Moving personal data
 

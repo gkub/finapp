@@ -13,9 +13,12 @@ from finance_tracker.db.models import (
     InvestmentSnapshot, MaterialAsset, MaterialAssetSnapshot,
 )
 from finance_tracker.services.currency_service import RateUnavailable, convert
+from finance_tracker.services.balance_service import current_balance_sheet
+from finance_tracker.services.projection_service import generate_events, position_at, project
 
 
 AVERAGE_DAYS_PER_MONTH = Decimal("30.4375")
+MIN_PACE_DAYS = 28
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +40,14 @@ class PaceMetric:
     @property
     def available(self) -> bool:
         return self.monthly_pace is not None
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledMetric:
+    key: str
+    current_value: Decimal | None
+    future_value: Decimal | None
+    change: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,9 +128,12 @@ def _metric(
     before = [item for item in dates if item <= requested_start]
     observed_start = max(before) if before else min(dates)
     observed_end = max(dates)
-    if observed_end <= observed_start:
+    elapsed = (observed_end - observed_start).days
+    if elapsed < MIN_PACE_DAYS:
         return PaceMetric(
-            key, label, None, None, None, None, None, observed_start, observed_end, 1,
+            key, label, series.values[observed_start], series.values[observed_end],
+            None, None, None, observed_start, observed_end,
+            sum(observed_start <= item <= observed_end for item in dates),
             series.covered_entities, series.total_entities, lower_is_better,
         )
     start_value, end_value = series.values[observed_start], series.values[observed_end]
@@ -229,3 +243,43 @@ def progress_metrics(
         _metric("debt", "Debt paid down", debt_series, requested_start, end, forecast_months, lower_is_better=True),
         _metric("net_worth", "Net worth", net_worth_series, requested_start, end, forecast_months),
     ]
+
+
+def _add_months(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year, month = value.year + month_index // 12, month_index % 12 + 1
+    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    month_lengths = (31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+    return date(year, month, min(value.day, month_lengths[month - 1]))
+
+
+def scheduled_metrics(
+    session: Session,
+    start: date,
+    forecast_months: int,
+    reporting_currency: str = "CAD",
+) -> dict[str, ScheduledMetric]:
+    """Forecast configured schedules; never extrapolate sparse balance snapshots."""
+    end = _add_months(start, forecast_months)
+    sheet = current_balance_sheet(session, reporting_currency, start)
+    events = generate_events(session, start, end, reporting_currency)
+    rows = project(
+        sheet.operating_cash, events, sheet.credit_cards, sheet.debts,
+        sheet.investments, sheet.credit_limit,
+    )
+    future = position_at(
+        end, rows, sheet.operating_cash, sheet.credit_cards, sheet.debts,
+        sheet.investments, sheet.net_worth,
+    )
+    values = {
+        "cash": (sheet.operating_cash, future.cash),
+        "investments": (sheet.investments, future.investments),
+        "debt": (sheet.debts, future.debt),
+        "net_worth": (sheet.net_worth, future.net_worth),
+    }
+    result = {
+        key: ScheduledMetric(key, current, projected, projected - current)
+        for key, (current, projected) in values.items()
+    }
+    result["savings"] = ScheduledMetric("savings", None, None, None)
+    return result
