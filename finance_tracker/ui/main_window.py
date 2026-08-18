@@ -29,6 +29,7 @@ from finance_tracker.services.projection_service import (
 from finance_tracker.utils.money import format_money
 from finance_tracker.ui.domain_pages import SettingsPage, configure_table, fit_table_columns, projection_prefs
 from finance_tracker.ui.outlook_page import Outlook
+from finance_tracker.ui.progress_page import ProgressPage
 from finance_tracker.ui.spending_page import SpendingPage
 from finance_tracker.ui.themes import stylesheet
 from finance_tracker.ui.management_pages import (
@@ -575,7 +576,8 @@ class MainWindow(QMainWindow):
         nav.addSpacing(18)
         self.stack = QStackedWidget()
         definitions = [
-            ("Dashboard", Dashboard()), ("Cash Flow", CashFlow()), ("Spending", SpendingPage()), ("Outlook", Outlook()),
+            ("Dashboard", Dashboard()), ("Cash Flow", CashFlow()), ("Spending", SpendingPage()),
+            ("Outlook", Outlook()), ("Progress", ProgressPage()),
             ("Accounts", Accounts()),
             ("Income", ManagedIncomePage()), ("Deposits", ManagedDepositPage()),
             ("Recurring Expenses", ManagedExpensePage()),

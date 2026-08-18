@@ -27,13 +27,14 @@ Implemented:
 - Income, recurring expenses, debts, and one-time events
 - Cash-flow events, running balances, committed cash, minimum cash, and safe-to-spend
 - Spending reconciliation from balance snapshots, optional aggregate check-ins, and period comparisons
+- Snapshot-based Progress & Pace analytics for savings, cash, investments, debt reduction, and net worth
 - Credit limits, available credit, utilization, and zero-floor debt projections
 - Primary/backup account funding for PayPal-style payments
 - Dark, light, and accessible pastel-pink themes
 - Account/debt snapshots and balance updates
 - Investment accounts, holdings, manual prices, and valuation
 - Operating-cash, investment, debt, and net-worth calculations
-- Dashboard, Cash Flow, Spending, Outlook, Accounts, Income, Recurring Expenses, Debts,
+- Dashboard, Cash Flow, Spending, Outlook, Progress, Accounts, Income, Recurring Expenses, Debts,
   One-Time Events, Investments, Update Finances, and Settings screens
 - Add/edit/disable/delete workflows with confirmations and reference protection
 - Local SQLite backup from Settings
@@ -68,7 +69,7 @@ Tests:
 env -u __PYVENV_LAUNCHER__ QT_QPA_PLATFORM=offscreen .venv/bin/pytest
 ```
 
-Last verified state: `46 passed`, including GUI, migration, spending, credit, funding, and theme-contrast coverage.
+Last verified state: `50 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
 
 ## Moving personal data
 

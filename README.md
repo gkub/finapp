@@ -18,6 +18,7 @@ latest database and closing commits and pushes it.
 ## Current highlights
 
 - Spending estimates from periodic balance updates, with optional broad check-ins
+- Progress and pace estimates from dated snapshots, with selectable lookback and forecast horizons
 - Credit limits, available credit, utilization, and projections that stop at $0 owed
 - PayPal-style primary and backup account funding
 - Dark, light, and accessible pastel-pink themes in Settings

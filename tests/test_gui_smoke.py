@@ -12,8 +12,9 @@ def test_main_window_constructs(engine):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     assert window.windowTitle() == "Personal Finance Tracker"
-    assert window.stack.count() == 14
+    assert window.stack.count() == 15
     assert "Outlook" in [button.text() for button in window.buttons]
+    assert "Progress" in [button.text() for button in window.buttons]
     assert "Deposits" in [button.text() for button in window.buttons]
     assert "Assets" in [button.text() for button in window.buttons]
     window.close()
