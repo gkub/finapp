@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import signal
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from finance_tracker.db.database import create_schema, session_scope
@@ -26,8 +28,29 @@ def main() -> int:
         ensure_defaults(session)
     window = MainWindow()
     window.show()
+    shutting_down = False
+    sync_started = False
+
+    # Let Python dispatch terminal signals while Qt owns the event loop.
+    signal_timer = QTimer()
+    signal_timer.start(200)
+    signal_timer.timeout.connect(lambda: None)
+
+    def _request_quit(_signum=None, _frame=None) -> None:
+        nonlocal shutting_down
+        if shutting_down:
+            return
+        shutting_down = True
+        app.quit()
+
+    signal.signal(signal.SIGINT, _request_quit)
+    signal.signal(signal.SIGTERM, _request_quit)
 
     def _sync_on_quit() -> None:
+        nonlocal sync_started
+        if sync_started:
+            return
+        sync_started = True
         try:
             push_warning = push_database()
         except SyncError as exc:

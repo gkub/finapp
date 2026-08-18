@@ -49,3 +49,28 @@ def test_pull_skipped_when_sync_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("FINANCE_TRACKER_SYNC", "0")
     data = _repo_with_db(tmp_path)
     assert db_sync.pull_database(data / "finance.db") is None
+
+
+def _git_status(cwd: Path, path: str) -> str:
+    result = subprocess.run(
+        ["git", "status", "--short", "--", path], cwd=cwd,
+        check=True, capture_output=True, text=True,
+    )
+    return result.stdout.strip()
+
+
+def test_pull_preserves_dirty_database_from_interrupted_session(tmp_path, monkeypatch):
+    monkeypatch.delenv("FINANCE_TRACKER_SYNC", raising=False)
+    data = _repo_with_db(tmp_path)
+    db = data / "finance.db"
+    connection = sqlite3.connect(db)
+    connection.execute("INSERT INTO ping VALUES (7)")
+    connection.commit()
+    connection.close()
+
+    assert _git_status(data, "finance.db")
+    assert db_sync.pull_database(db) is None
+    assert not _git_status(data, "finance.db")
+    connection = sqlite3.connect(db)
+    assert connection.execute("SELECT n FROM ping").fetchall() == [(7,)]
+    connection.close()

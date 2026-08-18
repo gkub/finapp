@@ -55,4 +55,4 @@ if [[ "${FINAPP_SYNC_MODE:-github}" == "github" ]]; then
 else
   export FINANCE_TRACKER_SYNC=0
 fi
-exec env -u __PYVENV_LAUNCHER__ "$ROOT/.venv/bin/finance-tracker"
+exec env -u __PYVENV_LAUNCHER__ "$ROOT/.venv/bin/finance-tracker" </dev/null

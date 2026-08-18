@@ -38,6 +38,7 @@ Implemented:
   One-Time Events, Investments, Update Finances, and Settings screens
 - Add/edit/disable/delete workflows with confirmations and reference protection
 - Local SQLite backup from Settings
+- Graceful Ctrl+C shutdown plus interrupted-session database recovery before pull
 
 ## Fresh setup
 
@@ -69,7 +70,7 @@ Tests:
 env -u __PYVENV_LAUNCHER__ QT_QPA_PLATFORM=offscreen .venv/bin/pytest
 ```
 
-Last verified state: `52 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
+Last verified state: `53 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
 
 ## Moving personal data
 
