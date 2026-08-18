@@ -20,7 +20,8 @@ class ProgressPage(QWidget):
         box = titled_page(
             self, "Progress & Pace",
             "Historical pace needs at least 28 days of snapshots. Scheduled forecast uses configured income, "
-            "bills, deposits, and debt payments instead of extrapolating a short-term balance swing.",
+            "bills, deposits, and debt payments. For Total debt, Progress means paid down while the projected "
+            "balance is the amount still owed.",
         )
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Measure the last"))
@@ -67,7 +68,7 @@ class ProgressPage(QWidget):
             return
 
         self.table.setHorizontalHeaderItem(7, QTableWidgetItem(f"Pace in {months} mo"))
-        self.table.setHorizontalHeaderItem(8, QTableWidgetItem(f"Scheduled in {months} mo"))
+        self.table.setHorizontalHeaderItem(8, QTableWidgetItem(f"Projected balance in {months} mo"))
         self.table.setRowCount(len(metrics))
         available = 0
         for row, metric in enumerate(metrics):

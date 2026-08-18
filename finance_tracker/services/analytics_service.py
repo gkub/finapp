@@ -240,7 +240,7 @@ def progress_metrics(
         _metric("savings", "Savings accounts", account_series(savings_accounts), requested_start, end, forecast_months),
         _metric("cash", "Operating cash", account_series(cash_accounts), requested_start, end, forecast_months),
         _metric("investments", "Investment value", investment_series, requested_start, end, forecast_months),
-        _metric("debt", "Debt paid down", debt_series, requested_start, end, forecast_months, lower_is_better=True),
+        _metric("debt", "Total debt", debt_series, requested_start, end, forecast_months, lower_is_better=True),
         _metric("net_worth", "Net worth", net_worth_series, requested_start, end, forecast_months),
     ]
 

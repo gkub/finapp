@@ -28,6 +28,7 @@ def test_progress_metrics_calculate_savings_and_debt_pace(session):
     assert metrics["savings"].monthly_pace == Decimal("202.9166666666666666666666667")
     assert metrics["savings"].projected_value == Decimal("2817.500000000000000000000000")
     assert metrics["debt"].change == Decimal("300.0000")
+    assert metrics["debt"].label == "Total debt"
     assert metrics["debt"].projected_value == Decimal("91.2500000000000000000000002")
 
 
