@@ -49,19 +49,7 @@ cd finapp
 
 ## Automated Mac and terminal setup
 
-For the recommended pastel-pink prompt:
-
-```bash
-./scripts/setup-mac.sh --cute
-```
-
-For Greg's general terminal behavior with Powerlevel10k:
-
-```bash
-./scripts/setup-mac.sh --classic
-```
-
-With no option, the script asks which appearance to use:
+Run the setup script:
 
 ```bash
 ./scripts/setup-mac.sh
@@ -69,18 +57,17 @@ With no option, the script asks which appearance to use:
 
 The script installs iTerm2, a Nerd Font, Git, GitHub CLI, Python, SQLite, Oh My
 Zsh, Git integration, autosuggestions, syntax highlighting, useful shared history,
-and the chosen prompt. It also walks her through her own GitHub authentication.
+and the Powerlevel10k Pure prompt. It also walks her through her own GitHub authentication.
 
 It does not copy Greg's account, SSH alias, email, credentials, Linux paths, or
 developer toolchains. Existing shell files are backed up, and it is safe to rerun.
 
-The cute option uses Starship's official **Pastel Powerline** preset, with rose,
-coral, peach, and soft-blue prompt segments:
+The script installs the same Powerlevel10k **Pure** prompt layout Greg uses: a compact,
+one-line `~ ❯` prompt with Git status, command duration, virtual environment, and time.
 
-<https://starship.rs/presets/pastel-powerline>
-
-Afterward, open **iTerm2 -> Settings -> Profiles -> Text -> Font** and select
-**CaskaydiaCove Nerd Font** so all prompt icons display properly.
+Afterward, open **iTerm2 -> Settings -> Profiles -> Text**. Select **CaskaydiaCove
+Nerd Font**, then choose whichever iTerm2 colour preset she likes. The script does not
+force a pink terminal colour scheme.
 
 ## Start Finapp
 
