@@ -154,4 +154,5 @@ repository contains highly sensitive financial information: keep it private,
 never reuse another person’s data repository, and do not add collaborators unless
 they should see all of that financial data.
 
-The specification and development handoff are in `docs/`.
+The specification, development handoff, and [fresh Mac setup guide](docs/MAC_SETUP.md)
+are in `docs/`.
