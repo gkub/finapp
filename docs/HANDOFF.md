@@ -5,7 +5,7 @@ Use this document to resume work with Codex on another computer.
 ## Context to give Codex
 
 > Continue implementing this personal finance tracker. Read `README.md`,
-> `docs/HANDOFF.md`, and the full design specification in `docs/` first. Inspect
+> `docs/HANDOFF.md`, `docs/PRODUCT_DIRECTION.md`, and the full design specification in `docs/` first. Inspect
 > the existing implementation and tests before changing anything. Preserve the
 > local-only architecture, Decimal-safe calculations, native currencies,
 > historical snapshots, and the distinction between operating cash, investments,
@@ -27,7 +27,7 @@ Implemented:
 - Income, recurring expenses, debts, and one-time events
 - Cash-flow events, running balances, committed cash, minimum cash, and safe-to-spend
 - Spending reconciliation from balance snapshots, optional aggregate check-ins, and period comparisons
-- Snapshot-based Progress & Pace analytics for savings, cash, investments, debt reduction, and net worth
+- Honest per-entity historical Progress analytics plus separately calculated scheduled intervals and debt reconciliation
 - Credit limits, available credit, utilization, and zero-floor debt projections
 - Primary/backup account funding for PayPal-style payments
 - Dark, light, and accessible pastel-pink themes
@@ -70,7 +70,7 @@ Tests:
 env -u __PYVENV_LAUNCHER__ QT_QPA_PLATFORM=offscreen .venv/bin/pytest
 ```
 
-Last verified state: `53 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
+Last verified state: `55 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
 
 ## Moving personal data
 
@@ -116,18 +116,16 @@ To move it safely:
 
 ## Recommended next steps
 
-1. Add native Windows onboarding, packaging, and a desktop shortcut.
-2. Add drag-and-drop bank CSV imports, remembered mappings, and duplicate detection.
-3. Add business account purpose and a business overview after PayPal funding settles.
-4. Replace lightweight additive migrations with a formal versioned migration system.
-5. Add debt and investment bulk-update workflows that always create snapshots.
-6. Refactor the GUI into one module per domain page.
-7. Add projected cash-balance and spending-history charts.
+See `docs/PRODUCT_DIRECTION.md` for the current agreed roadmap. The immediate
+proposal is to simplify ownership between Dashboard, Cash Flow, Outlook, and
+Progress/Trends without losing any tracked card or credit values, then add the first
+useful projected-cash and historical graphs.
 
 ## Key files
 
 - `README.md` — installation and usage
 - `docs/Private Personal Finance Tracker — Full Design & Implementation Specification.md` — authoritative product specification
+- `docs/PRODUCT_DIRECTION.md` — current simplification decisions, open questions, and implementation checkpoints
 - `finance_tracker/db/models.py` — schema
 - `finance_tracker/services/` — calculations and projections
 - `finance_tracker/ui/main_window.py` — shell and core pages
