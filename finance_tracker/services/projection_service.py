@@ -37,11 +37,22 @@ class ProjectionEvent:
     primary_account_name: str | None = None
     backup_account_name: str | None = None
     funding_summary: str | None = None
+    primary_in_cash: bool | None = None
+    backup_in_cash: bool | None = None
+    primary_in_net_worth: bool | None = None
+    backup_in_net_worth: bool | None = None
+    destination_account_id: int | None = None
+    destination_starting_balance: Decimal | None = None
+    destination_in_cash: bool | None = None
+    destination_in_net_worth: bool | None = None
+    transfer_amount: Decimal = Decimal("0")
+    cash_delta: Decimal | None = None
+    ordinary_asset_delta: Decimal | None = None
+    running_ordinary_asset_delta: Decimal = Decimal("0")
     running_available_credit: Decimal = Decimal("0")
 
 
 _ORDER = {"income": 0, "deposit": 1, "adjustment": 1, "expense": 2, "card_charge": 2, "debt_payment": 3}
-_CASH_EVENT_TYPES = frozenset({"income", "expense", "debt_payment", "adjustment", "deposit"})
 
 
 def _in_cash(session: Session, account_id: int | None) -> bool:
@@ -51,18 +62,25 @@ def _in_cash(session: Session, account_id: int | None) -> bool:
     return bool(account and account.active and account.include_in_cash)
 
 
-def _deposit_impacts(session: Session, deposit: Deposit, converted: Decimal) -> tuple[Decimal, Decimal]:
-    """Return (cash_delta, investment_delta) in reporting currency."""
+def _in_net_worth(session: Session, account_id: int | None) -> bool:
+    if account_id is None:
+        return False
+    account = session.get(Account, account_id)
+    return bool(account and account.active and account.include_in_net_worth)
+
+
+def _deposit_impacts(session: Session, deposit: Deposit, converted: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+    """Return operating-cash, investment, and ordinary-asset deltas."""
     to_investment = deposit.destination_investment_id is not None
     source_cash = _in_cash(session, deposit.source_account_id)
     dest_cash = _in_cash(session, deposit.destination_account_id)
+    source_net = _in_net_worth(session, deposit.source_account_id)
+    dest_net = _in_net_worth(session, deposit.destination_account_id)
+    cash_delta = (converted if dest_cash else Decimal("0")) - (converted if source_cash else Decimal("0"))
     if to_investment:
-        return (-converted if source_cash else Decimal("0"), converted)
-    if dest_cash and not source_cash:
-        return converted, Decimal("0")
-    if source_cash and not dest_cash:
-        return -converted, Decimal("0")
-    return Decimal("0"), Decimal("0")
+        return cash_delta, converted, -converted if source_net else Decimal("0")
+    asset_delta = (converted if dest_net else Decimal("0")) - (converted if source_net else Decimal("0"))
+    return cash_delta, Decimal("0"), asset_delta
 
 
 def _debt_type(session: Session, debt_id: int | None) -> str | None:
@@ -124,8 +142,14 @@ def generate_events(
             amount = _converted(income.amount, income.currency, reporting_currency, session, on_date)
             if amount is None:
                 continue
-            events.append(ProjectionEvent(on_date, income.name, income.amount, income.currency, amount,
-                                          "income", income.id, income.destination_account_id))
+            events.append(ProjectionEvent(
+                on_date, income.name, income.amount, income.currency, amount,
+                "income", income.id, income.destination_account_id,
+                primary_starting_balance=_account_balance(session, income.destination_account_id, reporting_currency, on_date),
+                primary_account_name=_account_name(session, income.destination_account_id),
+                primary_in_cash=_in_cash(session, income.destination_account_id),
+                primary_in_net_worth=_in_net_worth(session, income.destination_account_id),
+            ))
 
     deposits = session.scalars(select(Deposit).where(Deposit.active.is_(True))).all()
     for deposit in deposits:
@@ -133,11 +157,20 @@ def generate_events(
             converted = _converted(deposit.amount, deposit.currency, reporting_currency, session, on_date)
             if converted is None:
                 continue
-            cash_delta, investment_delta = _deposit_impacts(session, deposit, converted)
+            cash_delta, investment_delta, asset_delta = _deposit_impacts(session, deposit, converted)
             events.append(ProjectionEvent(
                 on_date, deposit.name, deposit.amount, deposit.currency, cash_delta,
                 "deposit", deposit.id, deposit.source_account_id,
                 investment_delta=investment_delta,
+                primary_starting_balance=_account_balance(session, deposit.source_account_id, reporting_currency, on_date),
+                primary_account_name=_account_name(session, deposit.source_account_id),
+                primary_in_cash=_in_cash(session, deposit.source_account_id),
+                primary_in_net_worth=_in_net_worth(session, deposit.source_account_id),
+                destination_account_id=deposit.destination_account_id,
+                destination_starting_balance=_account_balance(session, deposit.destination_account_id, reporting_currency, on_date),
+                destination_in_cash=_in_cash(session, deposit.destination_account_id),
+                destination_in_net_worth=_in_net_worth(session, deposit.destination_account_id),
+                transfer_amount=converted, cash_delta=cash_delta, ordinary_asset_delta=asset_delta,
             ))
 
     skip_expenses = exclude_expense_ids or frozenset()
@@ -166,6 +199,10 @@ def generate_events(
                 backup_starting_balance=_account_balance(session, expense.backup_account_id, reporting_currency, on_date),
                 primary_account_name=_account_name(session, expense.payment_account_id),
                 backup_account_name=_account_name(session, expense.backup_account_id),
+                primary_in_cash=_in_cash(session, expense.payment_account_id),
+                backup_in_cash=_in_cash(session, expense.backup_account_id),
+                primary_in_net_worth=_in_net_worth(session, expense.payment_account_id),
+                backup_in_net_worth=_in_net_worth(session, expense.backup_account_id),
             ))
 
     debts = session.scalars(select(Debt).where(
@@ -185,6 +222,10 @@ def generate_events(
                 "debt_payment", debt.id, debt.payment_account_id, debt.debt_type,
                 debt_id=debt.id,
                 starting_debt_balance=_debt_balance(session, debt.id, reporting_currency, on_date),
+                primary_starting_balance=_account_balance(session, debt.payment_account_id, reporting_currency, on_date),
+                primary_account_name=_account_name(session, debt.payment_account_id),
+                primary_in_cash=_in_cash(session, debt.payment_account_id),
+                primary_in_net_worth=_in_net_worth(session, debt.payment_account_id),
             ))
 
     one_time = session.scalars(select(OneTimeEvent).where(OneTimeEvent.event_date.between(range_start, range_end))).all()
@@ -201,6 +242,10 @@ def generate_events(
                 "debt_payment", item.id, item.account_id, _debt_type(session, item.payment_debt_id),
                 debt_id=item.payment_debt_id,
                 starting_debt_balance=_debt_balance(session, item.payment_debt_id, reporting_currency, item.event_date),
+                primary_starting_balance=_account_balance(session, item.account_id, reporting_currency, item.event_date),
+                primary_account_name=_account_name(session, item.account_id),
+                primary_in_cash=_in_cash(session, item.account_id),
+                primary_in_net_worth=_in_net_worth(session, item.account_id),
             ))
             continue
         native = item.amount if item.event_type == "income" else -item.amount
@@ -220,6 +265,10 @@ def generate_events(
             backup_starting_balance=_account_balance(session, item.backup_account_id, reporting_currency, item.event_date),
             primary_account_name=_account_name(session, item.account_id),
             backup_account_name=_account_name(session, item.backup_account_id),
+            primary_in_cash=_in_cash(session, item.account_id),
+            backup_in_cash=_in_cash(session, item.backup_account_id),
+            primary_in_net_worth=_in_net_worth(session, item.account_id),
+            backup_in_net_worth=_in_net_worth(session, item.backup_account_id),
         ))
 
     return sorted(events, key=lambda event: (event.date, _ORDER.get(event.event_type, 4), event.description.casefold(), event.source_record_id))
@@ -233,8 +282,9 @@ def project(
     starting_investments: Decimal = Decimal("0"),
     starting_credit_limit: Decimal = Decimal("0"),
 ) -> list[ProjectionEvent]:
-    """Project cash and liabilities, capping every debt at zero owed."""
+    """Project chronological account funding, cash, assets, and liabilities."""
     cash, cards, debt, investments = starting_cash, starting_cards, starting_debt, starting_investments
+    ordinary_asset_change = Decimal("0")
     remaining_debts: dict[int, Decimal] = {}
     account_balances: dict[int, Decimal] = {}
     projected: list[ProjectionEvent] = []
@@ -246,6 +296,8 @@ def project(
             account_balances.setdefault(event.account_id, event.primary_starting_balance)
         if event.backup_account_id is not None and event.backup_starting_balance is not None:
             account_balances.setdefault(event.backup_account_id, event.backup_starting_balance)
+        if event.destination_account_id is not None and event.destination_starting_balance is not None:
+            account_balances.setdefault(event.destination_account_id, event.destination_starting_balance)
 
         if event.event_type == "card_charge":
             charged = -event.reporting_amount
@@ -271,15 +323,29 @@ def project(
                 native = event.amount * paid / requested
             event = replace(event, amount=native, reporting_amount=-paid)
 
-        if event.event_type in _CASH_EVENT_TYPES:
-            cash += event.reporting_amount
-
         funding_summary = event.funding_summary
-        if event.event_type in {"expense", "adjustment"} and event.account_id is not None:
+        cash_effect = event.cash_delta
+        asset_effect = event.ordinary_asset_delta
+
+        if event.event_type == "income":
+            if event.account_id is not None and event.account_id in account_balances:
+                account_balances[event.account_id] += event.reporting_amount
+            cash_effect = event.reporting_amount if event.account_id is None or event.primary_in_cash else Decimal("0")
+            asset_effect = event.reporting_amount if event.account_id is None or event.primary_in_net_worth else Decimal("0")
+
+        elif event.event_type == "deposit":
+            if event.account_id is not None and event.account_id in account_balances:
+                account_balances[event.account_id] -= event.transfer_amount
+            if event.destination_account_id is not None and event.destination_account_id in account_balances:
+                account_balances[event.destination_account_id] += event.transfer_amount
+
+        elif event.event_type in {"expense", "adjustment"}:
             charge = max(-event.reporting_amount, Decimal("0"))
-            primary_before = account_balances.get(event.account_id)
-            if primary_before is not None:
-                if event.backup_account_id is not None:
+            if event.account_id is None:
+                primary_paid, backup_paid = charge, Decimal("0")
+            else:
+                primary_before = account_balances.get(event.account_id)
+                if event.backup_account_id is not None and primary_before is not None:
                     primary_paid = min(charge, max(primary_before, Decimal("0")))
                     backup_paid = charge - primary_paid
                     account_balances[event.account_id] = primary_before - primary_paid
@@ -289,18 +355,46 @@ def project(
                     backup_name = event.backup_account_name or "backup"
                     funding_summary = f"{primary_name} {primary_paid:.2f}; {backup_name} {backup_paid:.2f}"
                 else:
-                    account_balances[event.account_id] = primary_before - charge
+                    primary_paid, backup_paid = charge, Decimal("0")
+                    if primary_before is not None:
+                        account_balances[event.account_id] = primary_before - charge
                     funding_summary = f"{event.primary_account_name or 'primary'} {charge:.2f}"
+            if event.account_id is None:
+                cash_effect = -charge
+                asset_effect = -charge
+            else:
+                cash_effect = -(primary_paid if event.primary_in_cash else Decimal("0"))
+                cash_effect -= backup_paid if event.backup_in_cash else Decimal("0")
+                asset_effect = -(primary_paid if event.primary_in_net_worth else Decimal("0"))
+                asset_effect -= backup_paid if event.backup_in_net_worth else Decimal("0")
 
+        elif event.event_type == "debt_payment":
+            paid = max(-event.reporting_amount, Decimal("0"))
+            if event.account_id is not None and event.account_id in account_balances:
+                account_balances[event.account_id] -= paid
+            cash_effect = -paid if event.account_id is None or event.primary_in_cash else Decimal("0")
+            asset_effect = -paid if event.account_id is None or event.primary_in_net_worth else Decimal("0")
+            if event.account_id is not None:
+                funding_summary = f"{event.primary_account_name or 'primary'} {paid:.2f}"
+
+        elif event.event_type == "card_charge":
+            cash_effect = Decimal("0")
+            asset_effect = Decimal("0")
+
+        cash_effect = cash_effect if cash_effect is not None else event.reporting_amount
+        asset_effect = asset_effect if asset_effect is not None else cash_effect
+        cash += cash_effect
+        ordinary_asset_change += asset_effect
         investments += event.investment_delta
         projected.append(replace(
-            event, running_balance=cash, running_cards=max(cards, Decimal("0")),
+            event, cash_delta=cash_effect, ordinary_asset_delta=asset_effect,
+            running_balance=cash, running_cards=max(cards, Decimal("0")),
             running_debt=max(debt, Decimal("0")), running_investments=investments,
+            running_ordinary_asset_delta=ordinary_asset_change,
             funding_summary=funding_summary,
             running_available_credit=max(starting_credit_limit - cards, Decimal("0")),
         ))
     return projected
-
 
 
 def lowest_projected_balance(starting_cash: Decimal, events: list[ProjectionEvent]) -> Decimal:
@@ -310,8 +404,9 @@ def lowest_projected_balance(starting_cash: Decimal, events: list[ProjectionEven
 
 def committed_cash(events: list[ProjectionEvent]) -> Decimal:
     return -sum(
-        (event.reporting_amount for event in events
-         if event.event_type in {"expense", "debt_payment", "deposit"} and event.reporting_amount < 0),
+        ((event.cash_delta if event.cash_delta is not None else event.reporting_amount) for event in events
+         if event.event_type in {"expense", "debt_payment", "deposit"}
+         and (event.cash_delta if event.cash_delta is not None else event.reporting_amount) < 0),
         Decimal("0"),
     )
 
@@ -370,6 +465,7 @@ def position_at(
     else:
         last = applicable[-1]
         cash, cards, debt, invested = last.running_balance, last.running_cards, last.running_debt, last.running_investments
-    projected_net = net_worth + (cash - starting_cash) - (debt - starting_debt) + (invested - investments)
+    ordinary_delta = applicable[-1].running_ordinary_asset_delta if applicable else Decimal("0")
+    projected_net = net_worth + ordinary_delta - (debt - starting_debt) + (invested - investments)
     return ProjectedPosition(on_date, cash, cards, debt, invested, projected_net)
 

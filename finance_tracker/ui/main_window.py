@@ -27,7 +27,7 @@ from finance_tracker.services.projection_service import (
     safe_to_spend,
 )
 from finance_tracker.utils.money import format_money
-from finance_tracker.ui.domain_pages import SettingsPage, configure_table, fit_table_columns, projection_prefs
+from finance_tracker.ui.domain_pages import SettingsPage, configure_table, fit_table_columns, projection_prefs, purpose_choices
 from finance_tracker.ui.outlook_page import Outlook
 from finance_tracker.ui.progress_page import ProgressPage
 from finance_tracker.ui.spending_page import SpendingPage
@@ -157,7 +157,7 @@ class Dashboard(QWidget):
             self.table.setToolTip(str(exc))
 
 
-ASSET_ACCOUNT_TYPES = ["checking", "savings", "cash", "other"]
+ASSET_ACCOUNT_TYPES = ["checking", "savings", "cash", "digital_wallet", "other"]
 
 
 class AccountDialog(QDialog):
@@ -175,6 +175,7 @@ class AccountDialog(QDialog):
         self.kind.addItems(types)
         self.currency = QComboBox()
         self.currency.addItems(["CAD", "USD"])
+        self.purpose = purpose_choices()
         self.balance = self.money_spin(-999999999, 999999999)
         self.limit = self.money_spin(0, 999999999)
         self.rate = QDoubleSpinBox()
@@ -185,17 +186,20 @@ class AccountDialog(QDialog):
         self.net = QCheckBox()
         self.cash.setChecked(True if account is None else account.include_in_cash)
         self.net.setChecked(True if account is None else account.include_in_net_worth)
+        self.cash.setToolTip("Controls personal operating cash and safe-to-spend. Usually off for a business wallet.")
+        self.net.setToolTip("Include this account in overall net worth even when it is not spendable personal cash.")
         self.credit_note = QLabel("Credit cards belong on the Debts tab. They are liabilities, not cash accounts.")
         self.credit_note.setObjectName("muted")
         self.credit_note.setWordWrap(True)
         if account:
             self.kind.setCurrentText(account.account_type)
             self.currency.setCurrentText(account.currency)
+            self.purpose.setCurrentIndex(max(0, self.purpose.findData(account.purpose)))
             self.balance.setValue(float(account.current_balance))
             self.limit.setValue(float(account.overdraft_limit or 0))
             self.rate.setValue(float((account.overdraft_interest_rate or 0) * 100))
         for label, field in (
-            ("Name", self.name), ("Type", self.kind), ("Currency", self.currency),
+            ("Name", self.name), ("Type", self.kind), ("Purpose", self.purpose), ("Currency", self.currency),
             ("Current balance", self.balance), ("Overdraft limit", self.limit),
             ("Overdraft annual rate", self.rate), ("Include in operating cash", self.cash),
             ("Include in net worth", self.net),
@@ -207,6 +211,8 @@ class AccountDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
         self.kind.currentTextChanged.connect(self.sync_type_fields)
+        if account is None:
+            self.purpose.currentIndexChanged.connect(self.sync_new_purpose)
         self.sync_type_fields(self.kind.currentText())
 
     @staticmethod
@@ -217,6 +223,9 @@ class AccountDialog(QDialog):
         field.setPrefix("$ ")
         field.setGroupSeparatorShown(True)
         return field
+
+    def sync_new_purpose(self):
+        self.cash.setChecked(self.purpose.currentData() == "personal")
 
     def sync_type_fields(self, kind):
         overdraft = supports_overdraft(kind)
@@ -243,7 +252,7 @@ class AccountDialog(QDialog):
             limit = None
         rate = Decimal(str(self.rate.value())) / Decimal("100") if supports_overdraft(kind) and self.rate.value() else None
         return dict(
-            name=self.name.text().strip(), account_type=kind,
+            name=self.name.text().strip(), account_type=kind, purpose=self.purpose.currentData(),
             currency=self.currency.currentText(), current_balance=Decimal(str(self.balance.value())),
             overdraft_limit=limit, overdraft_interest_rate=rate,
             include_in_cash=False if kind == "credit_card" else self.cash.isChecked(),
@@ -272,8 +281,8 @@ class Accounts(QWidget):
         for button in (edit, remove, add):
             controls.addWidget(button)
         box.addLayout(controls)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Name", "Type", "Balance", "Overdraft limit", "Rate", "Headroom"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Name", "Type", "Purpose", "Balance", "Overdraft limit", "Rate", "Headroom"])
         configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.doubleClicked.connect(self.edit)
@@ -290,7 +299,7 @@ class Accounts(QWidget):
                     if overdraft and account.overdraft_interest_rate is not None else "—"
                 )
                 values = (
-                    account.name, account.account_type.replace("_", " ").title(),
+                    account.name, account.account_type.replace("_", " ").title(), account.purpose.title(),
                     format_money(account.current_balance, account.currency),
                     format_money(account.overdraft_limit, account.currency) if overdraft and account.overdraft_limit is not None else "—",
                     rate,

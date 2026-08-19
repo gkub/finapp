@@ -20,9 +20,20 @@ latest database and closing commits and pushes it.
 - Spending estimates from periodic balance updates, with optional broad check-ins
 - Progress and pace estimates from dated snapshots, with selectable lookback and forecast horizons
 - Credit limits, available credit, utilization, and projections that stop at $0 owed
-- PayPal-style primary and backup account funding
+- Digital-wallet accounts, Personal/Business purpose labels, and chronological PayPal-style primary/backup funding
 - Dark, light, and accessible pastel-pink themes in Settings
 - Signed account balances, overdraft limits, and overdraft interest rates
+
+### PayPal or another digital wallet
+
+Create it under **Accounts** with type **Digital wallet**. Purpose and spendability
+are separate: a Business wallet can still be included in operating cash when you
+consider its balance available for personal spending. Set recurring Twitch income
+to that wallet, then set each applicable expense’s **Primary funding account** to
+the wallet and its **Backup account** to chequing. Expenses retain their own
+Personal or Business purpose regardless of which account funds them. Cash Flow’s
+Funding column shows how each projected payment is split after earlier deposits and
+payments are applied.
 
 For useful spending estimates, use **Update Finances** periodically. The app
 reconciles the change between two balance snapshots against known income, bills,

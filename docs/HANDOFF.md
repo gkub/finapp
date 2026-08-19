@@ -29,7 +29,7 @@ Implemented:
 - Spending reconciliation from balance snapshots, optional aggregate check-ins, and period comparisons
 - Honest per-entity historical Progress analytics plus separately calculated scheduled intervals and debt reconciliation
 - Credit limits, available credit, utilization, and zero-floor debt projections
-- Primary/backup account funding for PayPal-style payments
+- Digital-wallet accounts, independent Personal/Business purpose labels, and chronological primary/backup funding for PayPal-style payments
 - Dark, light, and accessible pastel-pink themes
 - Account/debt snapshots and balance updates
 - Investment accounts, holdings, manual prices, and valuation
@@ -70,7 +70,7 @@ Tests:
 env -u __PYVENV_LAUNCHER__ QT_QPA_PLATFORM=offscreen .venv/bin/pytest
 ```
 
-Last verified state: `55 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
+Last verified state: `56 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
 
 ## Moving personal data
 

@@ -27,7 +27,7 @@ from finance_tracker.ui.domain_pages import (
     DebtDialog, DepositDialog, ExpenseDialog, HoldingDialog, IncomeDialog, InvestmentAccountDialog,
     MaterialAssetDialog, ScheduleFields, account_choices, configure_table, debt_choices, destination_ids,
     destination_label, fit_table_columns, money_spin, payment_method_choices, payment_method_ids,
-    payment_method_label, set_destination, set_payment_method, titled_page,
+    payment_method_label, purpose_choices, set_destination, set_payment_method, titled_page,
 )
 from finance_tracker.utils.money import format_money
 
@@ -133,8 +133,8 @@ class ManagedIncomePage(ManagedPage):
         super().__init__()
         box = titled_page(self, "Income", "Create, edit, disable, or permanently delete recurring income.")
         self.controls(box, self.add, self.edit, lambda: self.delete_record("this income source"))
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Name", "Amount", "Schedule", "Next date", "Destination", "Status"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Name", "Amount", "Purpose", "Schedule", "Next date", "Destination", "Status"])
         configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.doubleClicked.connect(self.edit)
@@ -152,6 +152,7 @@ class ManagedIncomePage(ManagedPage):
                 name=dialog.name.text().strip(), amount=Decimal(str(dialog.amount.value())),
                 currency=dialog.currency.currentText(), schedule_id=schedule.id,
                 destination_account_id=dialog.account.currentData(),
+                purpose=dialog.purpose.currentData(),
             ))
         self.refresh()
         self.changed.emit()
@@ -168,6 +169,7 @@ class ManagedIncomePage(ManagedPage):
             dialog.name.setText(item.name)
             dialog.amount.setValue(float(item.amount))
             dialog.currency.setCurrentText(item.currency)
+            set_combo_data(dialog.purpose, item.purpose)
             set_combo_data(dialog.account, item.destination_account_id)
             fill_schedule(dialog.schedule, schedule)
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -175,6 +177,7 @@ class ManagedIncomePage(ManagedPage):
             item.name = dialog.name.text().strip()
             item.amount = Decimal(str(dialog.amount.value()))
             item.currency = dialog.currency.currentText()
+            item.purpose = dialog.purpose.currentData()
             item.destination_account_id = dialog.account.currentData()
             apply_schedule(schedule, dialog.schedule)
         self.refresh()
@@ -188,7 +191,7 @@ class ManagedIncomePage(ManagedPage):
                 schedule = session.get(Schedule, item.schedule_id)
                 dates = occurrences(schedule, date.today(), date.today().replace(year=date.today().year + 2))
                 account = session.get(Account, item.destination_account_id) if item.destination_account_id else None
-                values = (item.name, format_money(item.amount, item.currency), ScheduleFields.describe(schedule),
+                values = (item.name, format_money(item.amount, item.currency), item.purpose.title(), ScheduleFields.describe(schedule),
                           dates[0].isoformat() if dates else "—", account.name if account else "—",
                           "Active" if item.active else "Disabled")
                 for col, value in enumerate(values):
@@ -304,9 +307,9 @@ class ManagedExpensePage(ManagedPage):
             "Bank-paid bills hit cash flow. Charges to a credit card wait until you pay the card.",
         )
         self.controls(box, self.add, self.edit, lambda: self.delete_record("this recurring expense"))
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["Name", "Amount", "Category", "Priority", "Paid from", "Schedule", "Next date", "Status"]
+            ["Name", "Amount", "Purpose", "Category", "Priority", "Funding", "Schedule", "Next date", "Status"]
         )
         configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -339,6 +342,7 @@ class ManagedExpensePage(ManagedPage):
                 category_id=category.id if category else None, priority=dialog.priority.currentText(),
                 payment_account_id=account_id, payment_debt_id=debt_id,
                 backup_account_id=dialog.backup.currentData() if account_id is not None else None,
+                purpose=dialog.purpose.currentData(),
             ))
         self.refresh()
         self.changed.emit()
@@ -358,6 +362,7 @@ class ManagedExpensePage(ManagedPage):
             dialog.currency.setCurrentText(item.currency)
             dialog.category.setText(category.name if category else "")
             dialog.priority.setCurrentText(item.priority)
+            set_combo_data(dialog.purpose, item.purpose)
             set_payment_method(dialog.account, item.payment_account_id, item.payment_debt_id)
             set_combo_data(dialog.backup, item.backup_account_id)
             fill_schedule(dialog.schedule, schedule)
@@ -369,6 +374,7 @@ class ManagedExpensePage(ManagedPage):
             category = self.category(session, dialog.category.text().strip())
             item.category_id = category.id if category else None
             item.priority = dialog.priority.currentText()
+            item.purpose = dialog.purpose.currentData()
             item.payment_account_id, item.payment_debt_id = payment_method_ids(dialog.account)
             item.backup_account_id = dialog.backup.currentData() if item.payment_account_id is not None else None
             apply_schedule(schedule, dialog.schedule)
@@ -388,8 +394,8 @@ class ManagedExpensePage(ManagedPage):
                     backup = session.get(Account, item.backup_account_id)
                     if backup is not None:
                         paid_from += f" → backup {backup.name}"
-                values = (item.name, format_money(item.amount, item.currency), category.name if category else "—",
-                          item.priority.title(), paid_from,
+                values = (item.name, format_money(item.amount, item.currency), item.purpose.title(),
+                          category.name if category else "—", item.priority.title(), paid_from,
                           ScheduleFields.describe(schedule),
                           dates[0].isoformat() if dates else "—", "Active" if item.active else "Disabled")
                 for col, value in enumerate(values):
@@ -671,6 +677,7 @@ class EventDialog(QDialog):
         self.amount = money_spin()
         self.currency = QComboBox()
         self.currency.addItems(["CAD", "USD"])
+        self.purpose = purpose_choices()
         self.on_date = QDateEdit(QDate.currentDate())
         self.on_date.setCalendarPopup(True)
         self.account = QComboBox()
@@ -687,6 +694,7 @@ class EventDialog(QDialog):
                 self.kind.setCurrentIndex(index)
             self.amount.setValue(float(event.amount))
             self.currency.setCurrentText(event.currency)
+            set_combo_data(self.purpose, event.purpose)
             self.on_date.setDate(QDate(event.event_date.year, event.event_date.month, event.event_date.day))
             set_payment_method(self.account, event.account_id, event.payment_debt_id)
             set_combo_data(self.backup, event.backup_account_id)
@@ -696,24 +704,44 @@ class EventDialog(QDialog):
         form.addRow("Type", self.kind)
         form.addRow("Amount", self.amount)
         form.addRow("Currency", self.currency)
+        form.addRow("Purpose", self.purpose)
         form.addRow("Date", self.on_date)
-        form.addRow("Paid from / charged to", self.account)
-        form.addRow("Backup bank account", self.backup)
+        form.addRow("Primary funding account / charged to", self.account)
+        form.addRow("Backup account after primary balance", self.backup)
         form.addRow("Debt", self.debt)
         form.addRow("Paid from", self.from_account)
         self.kind.currentIndexChanged.connect(self.sync_kind)
+        self.account.currentIndexChanged.connect(self.sync_kind)
         self.sync_kind()
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self.validate)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
+    def validate(self):
+        account_id, debt_id = payment_method_ids(self.account)
+        if self.kind.currentData() == "income" and debt_id is not None:
+            QMessageBox.warning(self, "Choose an account", "Income must be deposited into a bank or digital wallet account, not a debt.")
+            return
+        if self.backup.currentData() is not None and self.backup.currentData() == account_id:
+            QMessageBox.warning(self, "Choose another backup", "The backup account must differ from the primary account.")
+            return
+        self.accept()
+
     def sync_kind(self):
-        paydown = self.kind.currentData() == "debt_payment"
+        kind = self.kind.currentData()
+        paydown = kind == "debt_payment"
+        account_data = self.account.currentData()
+        bank_funded_expense = (
+            kind == "expense" and isinstance(account_data, str) and account_data.startswith("account:")
+        )
         self.form.setRowVisible(self.account, not paydown)
-        self.form.setRowVisible(self.backup, not paydown)
+        self.form.setRowVisible(self.backup, bank_funded_expense)
         self.form.setRowVisible(self.debt, paydown)
         self.form.setRowVisible(self.from_account, paydown)
+        label = self.form.labelForField(self.account)
+        if label is not None:
+            label.setText("Destination account" if kind == "income" else "Primary funding account / charged to")
 
     def values(self):
         if self.kind.currentData() == "debt_payment":
@@ -723,6 +751,7 @@ class EventDialog(QDialog):
                 amount=Decimal(str(self.amount.value())),
                 currency=self.currency.currentText(),
                 event_date=self.on_date.date().toPython(),
+                purpose=self.purpose.currentData(),
                 account_id=self.from_account.currentData(),
                 payment_debt_id=self.debt.currentData(),
             )
@@ -733,6 +762,7 @@ class EventDialog(QDialog):
             amount=Decimal(str(self.amount.value())),
             currency=self.currency.currentText(),
             event_date=self.on_date.date().toPython(),
+            purpose=self.purpose.currentData(),
             account_id=account_id,
             backup_account_id=self.backup.currentData() if account_id is not None else None,
             payment_debt_id=debt_id,
@@ -761,8 +791,8 @@ class EventPage(QWidget):
         for button in (edit, remove, add):
             row.addWidget(button)
         box.addLayout(row)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Name", "Date", "Type", "Amount", "Paid from"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Name", "Date", "Type", "Purpose", "Amount", "Funding"])
         configure_table(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.doubleClicked.connect(self.edit)
@@ -827,8 +857,12 @@ class EventPage(QWidget):
                     kind = f"Debt payment ({status.lower()})"
                 else:
                     paid_label = payment_method_label(session, item.account_id, item.payment_debt_id)
+                    if item.backup_account_id is not None:
+                        backup = session.get(Account, item.backup_account_id)
+                        if backup is not None:
+                            paid_label += f" → backup {backup.name}"
                     kind = item.event_type.replace("_", " ").title()
-                values = (item.name, item.event_date.isoformat(), kind,
+                values = (item.name, item.event_date.isoformat(), kind, item.purpose.title(),
                           format_money(item.amount, item.currency), paid_label)
                 for col, value in enumerate(values):
                     cell = QTableWidgetItem(value)

@@ -41,7 +41,10 @@ def test_account_dialog_omits_credit_card_and_overdraft_for_savings():
     app = QApplication.instance() or QApplication([])
     dialog = AccountDialog()
     types = [dialog.kind.itemText(i) for i in range(dialog.kind.count())]
-    assert types == ["checking", "savings", "cash", "other"]
+    assert types == ["checking", "savings", "cash", "digital_wallet", "other"]
+    assert dialog.purpose.currentData() == "personal"
+    dialog.purpose.setCurrentIndex(dialog.purpose.findData("business"))
+    assert dialog.cash.isChecked() is False
     dialog.name.setText("TFSA cash")
     dialog.kind.setCurrentText("savings")
     dialog.limit.setValue(500)
@@ -61,7 +64,7 @@ def test_accounts_page_uses_toolbar_not_cell_buttons(engine):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     page = next(item for item in window.pages if isinstance(item, Accounts))
-    assert page.table.columnCount() == 6
+    assert page.table.columnCount() == 7
     labels = [child.text() for child in page.findChildren(QPushButton)]
     assert "Edit" in labels
     assert "Delete" in labels
@@ -71,7 +74,7 @@ def test_accounts_page_uses_toolbar_not_cell_buttons(engine):
     window.close()
 
 
-def test_debt_dialog_monthly_rate_converts_to_annual():
+def test_debt_dialog_monthly_rate_converts_to_annual(engine):
     app = QApplication.instance() or QApplication([])
     dialog = DebtDialog()
     dialog.rate_period.setCurrentText("per month")

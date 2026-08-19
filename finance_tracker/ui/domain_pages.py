@@ -35,6 +35,14 @@ def money_spin():
     return field
 
 
+def purpose_choices():
+    field = QComboBox()
+    field.addItem("Personal", "personal")
+    field.addItem("Business", "business")
+    field.setToolTip("Business records stay identifiable without adding business screens for personal-only users.")
+    return field
+
+
 def quantity_spin():
     field = QDoubleSpinBox()
     field.setRange(0, 999_999_999)
@@ -296,11 +304,13 @@ class IncomeDialog(BaseDialog):
         self.amount = money_spin()
         self.currency = QComboBox()
         self.currency.addItems(["CAD", "USD"])
+        self.purpose = purpose_choices()
         self.account = QComboBox()
         account_choices(self.account)
         form.addRow("Name", self.name)
         form.addRow("Amount", self.amount)
         form.addRow("Currency", self.currency)
+        form.addRow("Purpose", self.purpose)
         form.addRow("Destination", self.account)
         self.schedule = ScheduleFields(form)
         self.finish(form)
@@ -361,10 +371,12 @@ class ExpenseDialog(BaseDialog):
         self.setWindowTitle("Add recurring expense")
         self.setMinimumWidth(430)
         form = QFormLayout(self)
+        self.form = form
         self.name = QLineEdit()
         self.amount = money_spin()
         self.currency = QComboBox()
         self.currency.addItems(["CAD", "USD"])
+        self.purpose = purpose_choices()
         self.category = QLineEdit()
         self.priority = QComboBox()
         self.priority.addItems(["essential", "important", "luxury", "expendable"])
@@ -373,11 +385,18 @@ class ExpenseDialog(BaseDialog):
         self.backup = QComboBox()
         account_choices(self.backup)
         for label, field in (("Name", self.name), ("Amount", self.amount), ("Currency", self.currency),
-                             ("Category", self.category), ("Priority", self.priority),
-                             ("Paid from / charged to", self.account), ("Backup bank account", self.backup)):
+                             ("Purpose", self.purpose), ("Category", self.category), ("Priority", self.priority),
+                             ("Primary funding account / charged to", self.account),
+                             ("Backup account after primary balance", self.backup)):
             form.addRow(label, field)
         self.schedule = ScheduleFields(form)
+        self.account.currentIndexChanged.connect(self.sync_funding)
+        self.sync_funding()
         self.finish(form)
+
+    def sync_funding(self):
+        data = self.account.currentData()
+        self.form.setRowVisible(self.backup, isinstance(data, str) and data.startswith("account:"))
 
     def validate(self):
         backup_id = self.backup.currentData()

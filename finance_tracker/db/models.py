@@ -57,6 +57,7 @@ class Account(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
     account_type: Mapped[str] = mapped_column(String(32))
+    purpose: Mapped[str] = mapped_column(String(16), default="personal", server_default="personal")
     institution: Mapped[str | None] = mapped_column(String(120))
     # Asset-account balances are signed: overdraft is negative. Standalone debt
     # remains a positive amount owed in Debt.current_balance.
@@ -126,6 +127,7 @@ class IncomeSource(Base):
     currency: Mapped[str] = mapped_column(ForeignKey("currencies.code"))
     schedule_id: Mapped[int] = mapped_column(ForeignKey("schedules.id"))
     destination_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
+    purpose: Mapped[str] = mapped_column(String(16), default="personal", server_default="personal")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
@@ -144,6 +146,7 @@ class RecurringExpense(Base):
     payment_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     backup_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     funding_strategy: Mapped[str] = mapped_column(String(32), default="primary_then_backup")
+    purpose: Mapped[str] = mapped_column(String(16), default="personal", server_default="personal")
     payment_debt_id: Mapped[int | None] = mapped_column(ForeignKey("debts.id"))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     start_date: Mapped[date | None] = mapped_column(Date)
@@ -189,6 +192,7 @@ class OneTimeEvent(Base):
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     backup_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     funding_strategy: Mapped[str] = mapped_column(String(32), default="primary_then_backup")
+    purpose: Mapped[str] = mapped_column(String(16), default="personal", server_default="personal")
     payment_debt_id: Mapped[int | None] = mapped_column(ForeignKey("debts.id"))
     event_type: Mapped[str] = mapped_column(String(16))
     applied: Mapped[bool] = mapped_column(Boolean, default=False)

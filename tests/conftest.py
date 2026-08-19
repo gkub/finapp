@@ -1,6 +1,7 @@
 import pytest
 from sqlalchemy.orm import Session
 
+import finance_tracker.db.database as database
 from finance_tracker.db.database import build_engine, create_schema
 
 
@@ -13,7 +14,10 @@ def _disable_db_sync(monkeypatch):
 def engine(tmp_path):
     value = build_engine(tmp_path / "test.db")
     create_schema(value)
+    database.dispose_engine()
+    database._engine = value
     yield value
+    database._engine = None
     value.dispose()
 
 
