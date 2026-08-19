@@ -18,6 +18,9 @@ def test_theme_text_and_primary_buttons_have_accessible_contrast():
         assert _contrast(palette["muted"], palette["background"]) >= 4.5, name
         assert _contrast(palette["primary_text"], palette["primary"]) >= 4.5, name
         assert palette["text"] in stylesheet(name)
+        assert "QFrame#metricGroup" in stylesheet(name)
+        assert "QFrame#metricTile" in stylesheet(name)
+        assert "QLabel { background:transparent; }" in stylesheet(name)
 
 
 def test_pink_theme_is_pastel_not_hot_pink():

@@ -30,6 +30,7 @@ Implemented:
 - Honest per-entity historical Trends analytics, with scheduled intervals and debt reconciliation owned by Outlook
 - Credit limits, available credit, utilization, and zero-floor debt projections
 - Digital-wallet accounts, independent Personal/Business purpose labels, and chronological primary/backup funding for PayPal-style payments
+- Responsive grouped Dashboard and Cash Flow summaries
 - Dark, light, and accessible pastel-pink themes
 - Account/debt snapshots and balance updates
 - Investment accounts, holdings, manual prices, and valuation
@@ -70,7 +71,7 @@ Tests:
 env -u __PYVENV_LAUNCHER__ QT_QPA_PLATFORM=offscreen .venv/bin/pytest
 ```
 
-Last verified state: `58 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
+Last verified state: `60 passed`, including GUI, analytics, migration, spending, credit, funding, and theme-contrast coverage.
 
 ## Moving personal data
 

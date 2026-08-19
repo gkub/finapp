@@ -7,8 +7,8 @@ from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDateEdit, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
 from sqlalchemy import select
@@ -48,7 +48,11 @@ QPushButton:hover { background:#2d3747; }
 QPushButton#primary { background:#3d7eff; border-color:#3d7eff; font-weight:600; }
 QPushButton#nav { text-align:left; border:none; background:transparent; padding:10px 14px; }
 QPushButton#nav:checked { background:#263650; color:#78a7ff; border-left:3px solid #4d8aff; }
-QFrame#card { background:#1a202a; border:1px solid #293241; border-radius:10px; }
+QLabel { background:transparent; }
+QFrame#metricGroup { background:#1a202a; border:1px solid #293241; border-radius:12px; }
+QFrame#metricTile { background:#1b222d; border:none; border-radius:8px; }
+QLabel#groupTitle { font-size:16px; font-weight:700; }
+QLabel#metricCaption,QLabel#metricDetail { color:#93a0b3; }
 QLabel#metric { font-size:23px; font-weight:700; }
 QLineEdit,QComboBox,QDoubleSpinBox,QDateEdit { background:#171c25; border:1px solid #354154; border-radius:6px; padding:7px; }
 QTableWidget { background:#171c25; alternate-background-color:#1b222d; border:1px solid #293241; gridline-color:#293241; }
@@ -65,17 +69,19 @@ QHeaderView::section { background:#202733; color:#b9c4d4; border:none; padding:8
 class Card(QFrame):
     def __init__(self, title):
         super().__init__()
-        self.setObjectName("card")
+        self.setObjectName("metricTile")
+        self.setMinimumWidth(150)
+        self.setMinimumHeight(96)
         box = QVBoxLayout(self)
-        box.setContentsMargins(10, 8, 10, 8)
+        box.setContentsMargins(12, 9, 12, 9)
         box.setSpacing(2)
         label = QLabel(title)
-        label.setObjectName("muted")
+        label.setObjectName("metricCaption")
         self.caption = label
-        self.value = QLabel("—")
+        self.value = QLabel("-")
         self.value.setObjectName("metric")
         self.detail = QLabel()
-        self.detail.setObjectName("muted")
+        self.detail.setObjectName("metricDetail")
         self.detail.setWordWrap(True)
         self.detail.hide()
         box.addWidget(label)
@@ -85,6 +91,80 @@ class Card(QFrame):
     def set_detail(self, text):
         self.detail.setText(text)
         self.detail.setVisible(bool(text))
+
+
+class MetricGroup(QFrame):
+    TILE_WIDTH = 190
+
+    def __init__(self, title, items, max_columns=None):
+        super().__init__()
+        self.setObjectName("metricGroup")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self.max_columns = max_columns or len(items)
+        self._columns = 0
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 14)
+        outer.setSpacing(9)
+        heading = QLabel(title)
+        heading.setObjectName("groupTitle")
+        outer.addWidget(heading)
+        self.grid = QGridLayout()
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(8)
+        self.grid.setVerticalSpacing(8)
+        outer.addLayout(self.grid)
+        self.cards = {}
+        self._ordered_cards = []
+        for key, label in items:
+            card = Card(label)
+            self.cards[key] = card
+            self._ordered_cards.append(card)
+        self._set_columns(1)
+
+    def _balanced_columns(self, supported):
+        count = len(self._ordered_cards)
+        supported = max(1, min(self.max_columns, count, supported))
+        if count == 4 and supported == 3:
+            return 2
+        return supported
+
+    def _set_columns(self, columns):
+        columns = self._balanced_columns(columns)
+        if columns == self._columns:
+            return
+        while self.grid.count():
+            self.grid.takeAt(0)
+        for index, card in enumerate(self._ordered_cards):
+            self.grid.addWidget(card, index // columns, index % columns)
+        for column in range(self.max_columns):
+            self.grid.setColumnStretch(column, 1 if column < columns else 0)
+        self.grid.invalidate()
+        self.updateGeometry()
+        self._columns = columns
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        usable = max(event.size().width() - 28, 1)
+        self._set_columns(max(1, usable // self.TILE_WIDTH))
+
+
+def _funding_display(summary, currency):
+    if not summary:
+        return "-"
+    rendered = []
+    for part in summary.split(";"):
+        name, separator, raw_amount = part.strip().rpartition(" ")
+        if not separator:
+            return summary
+        try:
+            amount = Decimal(raw_amount)
+        except Exception:
+            return summary
+        if amount == 0:
+            continue
+        display_name = name.replace("_", " ")
+        rendered.append(f"{display_name} {format_money(amount, currency)}")
+    return " -> ".join(rendered) if rendered else "-"
 
 
 def page_layout(widget, title, subtitle=""):
@@ -104,46 +184,96 @@ def page_layout(widget, title, subtitle=""):
 
 class Dashboard(QWidget):
     PREVIEW_LIMIT = 5
+    WIDE_BREAKPOINT = 1350
 
     def __init__(self):
         super().__init__()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        root.addWidget(self.scroll)
+
+        content = QWidget()
+        self.scroll.setWidget(content)
         box = page_layout(
-            self, "Dashboard",
+            content, "Dashboard",
             "A concise view of what is spendable now, what is owed, and where the current schedule leads.",
         )
-        self.cards = {}
-        for heading, items in (
-            ("Spendable now", (
-                ("cash", "Operating cash"), ("safe", "Safe to spend"), ("low", "Forecast cash low"),
-            )),
-            ("Credit and debt", (
-                ("cards", "Cards owed"), ("available", "Credit available"),
-                ("utilization", "Card utilization"), ("debt", "Total debt"),
-            )),
-            ("Overall position", (
-                ("net", "Net worth"), ("investments", "Investments"), ("material", "Material assets"),
-            )),
-        ):
-            label = QLabel(f"<b>{heading}</b>")
-            box.addWidget(label)
-            grid = QGridLayout()
-            for column, (key, title) in enumerate(items):
-                self.cards[key] = Card(title)
-                grid.addWidget(self.cards[key], 0, column)
-            box.addLayout(grid)
+        self.group_grid = QGridLayout()
+        self.group_grid.setContentsMargins(0, 0, 0, 0)
+        self.group_grid.setHorizontalSpacing(12)
+        self.group_grid.setVerticalSpacing(12)
+        self.cash_group = MetricGroup("Cash & buffer", (
+            ("cash", "Operating cash"), ("safe", "Safe to spend"), ("low", "Forecast cash low"),
+        ), 3)
+        self.credit_group = MetricGroup("Credit & debt", (
+            ("cards", "Cards owed"), ("available", "Credit available"),
+            ("utilization", "Card utilization"), ("debt", "Total debt"),
+        ), 4)
+        self.position_group = MetricGroup("Overall position", (
+            ("net", "Net worth"), ("investments", "Investments"), ("material", "Material assets"),
+        ), 3)
+        self.groups = (self.cash_group, self.credit_group, self.position_group)
+        self.cards = {
+            key: card
+            for group in self.groups
+            for key, card in group.cards.items()
+        }
+        box.addLayout(self.group_grid)
+        self._wide_layout = None
+        self._reflow_groups(False)
 
+        self.events_panel = QFrame()
+        self.events_panel.setObjectName("metricGroup")
+        events_layout = QVBoxLayout(self.events_panel)
+        events_layout.setContentsMargins(14, 12, 14, 14)
+        events_layout.setSpacing(8)
         self.upcoming = QLabel("Next scheduled events")
-        box.addWidget(self.upcoming)
+        self.upcoming.setObjectName("groupTitle")
+        events_layout.addWidget(self.upcoming)
         self.upcoming_note = QLabel()
         self.upcoming_note.setObjectName("muted")
-        box.addWidget(self.upcoming_note)
+        self.upcoming_note.setWordWrap(True)
+        events_layout.addWidget(self.upcoming_note)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Funding"])
         configure_table(self.table)
-        self.table.setMinimumHeight(150)
-        self.table.setMaximumHeight(245)
-        box.addWidget(self.table)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.setMinimumHeight(205)
+        self.table.setMaximumHeight(230)
+        events_layout.addWidget(self.table)
+        box.addWidget(self.events_panel)
         box.addStretch()
+
+    def _reflow_groups(self, wide):
+        if wide == self._wide_layout:
+            return
+        while self.group_grid.count():
+            self.group_grid.takeAt(0)
+        if wide:
+            self.group_grid.addWidget(self.cash_group, 0, 0)
+            self.group_grid.addWidget(self.position_group, 0, 1)
+            self.group_grid.addWidget(self.credit_group, 1, 0, 1, 2)
+            self.group_grid.setColumnStretch(0, 1)
+            self.group_grid.setColumnStretch(1, 1)
+        else:
+            self.group_grid.addWidget(self.cash_group, 0, 0)
+            self.group_grid.addWidget(self.credit_group, 1, 0)
+            self.group_grid.addWidget(self.position_group, 2, 0)
+            self.group_grid.setColumnStretch(0, 1)
+            self.group_grid.setColumnStretch(1, 0)
+        self._wide_layout = wide
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reflow_groups(event.size().width() >= self.WIDE_BREAKPOINT)
 
     @staticmethod
     def _percentage(value):
@@ -200,10 +330,17 @@ class Dashboard(QWidget):
                 for row, event in enumerate(preview):
                     for col, value in enumerate((
                         event.date.isoformat(), event.description,
-                        format_money(event.reporting_amount, currency), event.funding_summary or "-",
+                        format_money(event.reporting_amount, currency),
+                        _funding_display(event.funding_summary, currency),
                     )):
                         self.table.setItem(row, col, QTableWidgetItem(value))
-                fit_table_columns(self.table)
+                self.table.resizeRowsToContents()
+                content_height = (
+                    self.table.horizontalHeader().height()
+                    + sum(self.table.rowHeight(row) for row in range(self.table.rowCount()))
+                    + self.table.frameWidth() * 2 + 4
+                )
+                self.table.setFixedHeight(max(150, content_height))
                 self.table.setToolTip("")
         except Exception as exc:
             for card in self.cards.values():
@@ -471,13 +608,31 @@ class CashFlow(QWidget):
         filters.addStretch()
         box.addLayout(filters)
 
-        cards = QGridLayout()
-        self.committed, self.minimum, self.safe = Card("Committed cash"), Card("Minimum cash"), Card("Safe to spend")
-        self.proj_cards, self.proj_available, self.proj_debt = Card("Projected cards"), Card("Credit available"), Card("Projected debt")
-        self.flow_cards = (self.committed, self.minimum, self.safe, self.proj_cards, self.proj_available, self.proj_debt)
-        for index, card in enumerate(self.flow_cards):
-            cards.addWidget(card, index / 3, index % 3)
-        box.addLayout(cards)
+        self.summary_grid = QGridLayout()
+        self.summary_grid.setContentsMargins(0, 0, 0, 0)
+        self.summary_grid.setHorizontalSpacing(12)
+        self.summary_grid.setVerticalSpacing(12)
+        self.cash_summary = MetricGroup("Cash commitments", (
+            ("committed", "Committed cash"), ("minimum", "Minimum cash"), ("safe", "Safe to spend"),
+        ), 3)
+        self.ending_summary = MetricGroup("Forecast ending position", (
+            ("cards", "Projected cards"), ("available", "Credit available"), ("debt", "Projected debt"),
+        ), 3)
+        self.committed = self.cash_summary.cards["committed"]
+        self.minimum = self.cash_summary.cards["minimum"]
+        self.safe = self.cash_summary.cards["safe"]
+        self.proj_cards = self.ending_summary.cards["cards"]
+        self.proj_available = self.ending_summary.cards["available"]
+        self.proj_debt = self.ending_summary.cards["debt"]
+        self.flow_cards = (
+            self.committed, self.minimum, self.safe,
+            self.proj_cards, self.proj_available, self.proj_debt,
+        )
+        for card in self.flow_cards:
+            card.setMinimumHeight(70)
+        box.addLayout(self.summary_grid)
+        self._summaries_wide = None
+        self._reflow_summaries(False)
 
         self.filter_status = QLabel()
         self.filter_status.setObjectName("muted")
@@ -489,6 +644,27 @@ class CashFlow(QWidget):
         )
         configure_table(self.table)
         box.addWidget(self.table)
+
+    def _reflow_summaries(self, wide):
+        if wide == self._summaries_wide:
+            return
+        while self.summary_grid.count():
+            self.summary_grid.takeAt(0)
+        if wide:
+            self.summary_grid.addWidget(self.cash_summary, 0, 0)
+            self.summary_grid.addWidget(self.ending_summary, 0, 1)
+            self.summary_grid.setColumnStretch(0, 1)
+            self.summary_grid.setColumnStretch(1, 1)
+        else:
+            self.summary_grid.addWidget(self.cash_summary, 0, 0)
+            self.summary_grid.addWidget(self.ending_summary, 1, 0)
+            self.summary_grid.setColumnStretch(0, 1)
+            self.summary_grid.setColumnStretch(1, 0)
+        self._summaries_wide = wide
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reflow_summaries(event.size().width() >= 1350)
 
     def apply_settings(self):
         with session_scope() as session:
@@ -534,7 +710,7 @@ class CashFlow(QWidget):
                     values = (
                         event.date.isoformat(), event.description, event.event_type.replace("_", " ").title(),
                         event.purpose.title(), format_money(event.amount, event.currency), event.currency,
-                        event.funding_summary or "-", format_money(event.running_balance, currency),
+                        _funding_display(event.funding_summary, currency), format_money(event.running_balance, currency),
                         format_money(event.running_investments, currency), format_money(event.running_cards, currency),
                         format_money(event.running_available_credit, currency), format_money(event.running_debt, currency),
                     )

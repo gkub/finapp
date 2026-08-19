@@ -130,12 +130,12 @@ Rules:
 ### Checkpoint 1: simplify page ownership
 
 
-Implementation status (2026-08-19): this checkpoint is implemented in the current
-working tree and intentionally left uncommitted for manual UI audit. Dashboard
-metrics are grouped with current/projected pairs, its preview is limited to five
-events, Cash Flow owns the filtered complete timeline, Outlook contains Scenario
-and Scheduled debt tabs, and the navigation now labels the history-only page
-**Trends**. No database migration was required.
+Implementation status (2026-08-19): page ownership and forecast/history separation
+were manually approved and committed as `632dc25`. The current working tree is a
+new, intentionally uncommitted visual checkpoint: responsive parent metric panels,
+balanced tile wrapping, a scroll-safe Dashboard, better event-table sizing, and
+cleaner primary/backup funding labels. Cash Flow reuses the same responsive summary
+component. No database migration was required.
 
 - Reshape Dashboard as a concise overview without losing credit/card metrics.
 - Leave the detailed event table on Cash Flow.
@@ -182,14 +182,14 @@ and Scheduled debt tabs, and the navigation now labels the history-only page
 
 ## Current technical checkpoint
 
-Commit `6af41fc` added digital wallets, purpose labels, and chronological account funding. The current uncommitted working tree builds the subsequent information-architecture checkpoint.
+Commit `632dc25` established the approved Dashboard, Cash Flow, Outlook, and Trends ownership model. The current uncommitted working tree adds the responsive visual layer described above.
 At that checkpoint:
 
 - Historical debt appears per debt, with a total only when every debt has coverage.
 - A one-day balance change is recorded but is never converted into a monthly pace.
 - Scheduled debt reconciles opening owed + new charges - capped payments = closing
   owed, while net reduction is shown separately.
-- The full test suite reports 58 passing tests in the current uncommitted checkpoint.
+- The full test suite reports 60 passing tests in the current uncommitted checkpoint.
 - The redesign loaded successfully against a disposable copy of the user's real
   database.
 - No schema migration or mutation of the live finance database was required.

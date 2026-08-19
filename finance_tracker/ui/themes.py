@@ -52,7 +52,11 @@ QPushButton:hover {{ background:{p["button_hover"]}; }}
 QPushButton#primary {{ background:{p["primary"]}; border-color:{p["primary"]}; color:{p["primary_text"]}; font-weight:600; }}
 QPushButton#nav {{ text-align:left; border:none; background:transparent; padding:10px 14px; }}
 QPushButton#nav:checked {{ background:{p["selection"]}; color:{p["accent"]}; border-left:3px solid {p["primary"]}; }}
-QFrame#card {{ background:{p["surface"]}; border:1px solid {p["border"]}; border-radius:10px; }}
+QLabel {{ background:transparent; }}
+QFrame#metricGroup {{ background:{p["surface"]}; border:1px solid {p["border"]}; border-radius:12px; }}
+QFrame#metricTile {{ background:{p["alternate"]}; border:none; border-radius:8px; }}
+QLabel#groupTitle {{ font-size:16px; font-weight:700; }}
+QLabel#metricCaption,QLabel#metricDetail {{ color:{p["muted"]}; }}
 QLabel#metric {{ font-size:23px; font-weight:700; }}
 QLineEdit,QComboBox,QDoubleSpinBox,QDateEdit {{ background:{p["surface"]}; border:1px solid {p["border"]}; border-radius:6px; padding:7px; }}
 QTableWidget {{ background:{p["surface"]}; alternate-background-color:{p["alternate"]}; border:1px solid {p["border"]}; gridline-color:{p["border"]}; }}

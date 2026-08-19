@@ -3,7 +3,9 @@ from decimal import Decimal
 from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QHeaderView, QPushButton, QTableWidget
 from finance_tracker.db.database import create_schema
 from finance_tracker.ui.domain_pages import DebtDialog, configure_table, fit_table_columns
-from finance_tracker.ui.main_window import AccountDialog, Accounts, CashFlow, Dashboard, MainWindow, UpdateFinances
+from finance_tracker.ui.main_window import (
+    AccountDialog, Accounts, CashFlow, Dashboard, MainWindow, MetricGroup, UpdateFinances, _funding_display,
+)
 from finance_tracker.ui.management_pages import ManagedDebtPage
 from finance_tracker.ui.outlook_page import Outlook
 from finance_tracker.ui.progress_page import TrendsPage
@@ -142,3 +144,39 @@ def test_analytical_pages_have_distinct_ownership(engine):
     assert trends.history_table.columnCount() == 10
     assert not hasattr(trends, "forecast_table")
     window.close()
+
+
+def test_metric_group_reflows_and_funding_labels_drop_zero_backup():
+    app = QApplication.instance() or QApplication([])
+    group = MetricGroup("Credit", (
+        ("one", "One"), ("two", "Two"), ("three", "Three"), ("four", "Four"),
+    ), 4)
+    group.resize(660, 240)
+    group.show()
+    app.processEvents()
+    assert group._columns == 2
+    group.resize(1000, 240)
+    app.processEvents()
+    assert group._columns == 4
+    assert _funding_display("gkub_paypal 22.04; chequing_td 0.00", "CAD") == "gkub paypal $22.04"
+    assert _funding_display("gkub_paypal 0.59; chequing_td 6.75", "CAD") == (
+        "gkub paypal $0.59 -> chequing td $6.75"
+    )
+    group.close()
+
+
+def test_dashboard_uses_responsive_parent_groups_and_stretching_preview(engine):
+    create_schema(engine)
+    app = QApplication.instance() or QApplication([])
+    dashboard = Dashboard()
+    dashboard.resize(1500, 800)
+    dashboard.show()
+    app.processEvents()
+    assert dashboard._wide_layout is True
+    dashboard.resize(1000, 800)
+    app.processEvents()
+    assert dashboard._wide_layout is False
+    assert dashboard.cash_group.objectName() == "metricGroup"
+    assert dashboard.table.horizontalHeader().sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
+    assert dashboard.table.horizontalHeader().sectionResizeMode(3) == QHeaderView.ResizeMode.Stretch
+    dashboard.close()
