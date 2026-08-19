@@ -3,8 +3,10 @@ from decimal import Decimal
 from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QHeaderView, QPushButton, QTableWidget
 from finance_tracker.db.database import create_schema
 from finance_tracker.ui.domain_pages import DebtDialog, configure_table, fit_table_columns
-from finance_tracker.ui.main_window import AccountDialog, Accounts, MainWindow, UpdateFinances
+from finance_tracker.ui.main_window import AccountDialog, Accounts, CashFlow, Dashboard, MainWindow, UpdateFinances
 from finance_tracker.ui.management_pages import ManagedDebtPage
+from finance_tracker.ui.outlook_page import Outlook
+from finance_tracker.ui.progress_page import TrendsPage
 
 
 def test_main_window_constructs(engine):
@@ -14,7 +16,7 @@ def test_main_window_constructs(engine):
     assert window.windowTitle() == "Personal Finance Tracker"
     assert window.stack.count() == 15
     assert "Outlook" in [button.text() for button in window.buttons]
-    assert "Progress" in [button.text() for button in window.buttons]
+    assert "Trends" in [button.text() for button in window.buttons]
     assert "Deposits" in [button.text() for button in window.buttons]
     assert "Assets" in [button.text() for button in window.buttons]
     window.close()
@@ -112,3 +114,31 @@ def test_update_finances_lists_new_amount_not_mystery_interest():
     assert field.minimumHeight() >= 36
     assert field.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
     page.close()
+
+
+def test_analytical_pages_have_distinct_ownership(engine):
+    create_schema(engine)
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+
+    dashboard = next(item for item in window.pages if isinstance(item, Dashboard))
+    assert dashboard.table.columnCount() == 4
+    assert set(dashboard.cards) == {
+        "cash", "safe", "low", "cards", "available", "utilization",
+        "debt", "net", "investments", "material",
+    }
+
+    cash_flow = next(item for item in window.pages if isinstance(item, CashFlow))
+    assert cash_flow.table.columnCount() == 12
+    assert cash_flow.purpose_filter.itemText(0) == "All"
+    assert set(cash_flow.type_filters) == {"income", "bills", "cards", "debt", "transfers"}
+
+    outlook = next(item for item in window.pages if isinstance(item, Outlook))
+    assert [outlook.tabs.tabText(i) for i in range(outlook.tabs.count())] == ["Scenario", "Scheduled debt"]
+    assert outlook.forecast_table.columnCount() == 4
+    assert outlook.debt_table.columnCount() == 6
+
+    trends = next(item for item in window.pages if isinstance(item, TrendsPage))
+    assert trends.history_table.columnCount() == 10
+    assert not hasattr(trends, "forecast_table")
+    window.close()

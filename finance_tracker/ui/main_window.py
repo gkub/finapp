@@ -17,19 +17,19 @@ from sqlalchemy.exc import IntegrityError
 from finance_tracker.db.database import session_scope
 from finance_tracker.db.models import Account, Debt, InvestmentAccount, InvestmentSnapshot, MaterialAsset, Setting
 from finance_tracker.services.balance_service import (
-    current_balance_sheet, estimated_overdraft_interest, overdraft_headroom,
+    credit_utilization, current_balance_sheet, estimated_overdraft_interest, overdraft_headroom,
     supports_overdraft, update_account_balance, update_debt_balance,
     update_material_asset_value,
 )
 from finance_tracker.services.investment_service import value_account
 from finance_tracker.services.projection_service import (
-    committed_cash, generate_events, lowest_projected_balance, project,
+    committed_cash, generate_events, lowest_projected_balance, position_at, project,
     safe_to_spend,
 )
 from finance_tracker.utils.money import format_money
 from finance_tracker.ui.domain_pages import SettingsPage, configure_table, fit_table_columns, projection_prefs, purpose_choices
 from finance_tracker.ui.outlook_page import Outlook
-from finance_tracker.ui.progress_page import ProgressPage
+from finance_tracker.ui.progress_page import TrendsPage
 from finance_tracker.ui.spending_page import SpendingPage
 from finance_tracker.ui.themes import stylesheet
 from finance_tracker.ui.management_pages import (
@@ -67,13 +67,24 @@ class Card(QFrame):
         super().__init__()
         self.setObjectName("card")
         box = QVBoxLayout(self)
+        box.setContentsMargins(10, 8, 10, 8)
+        box.setSpacing(2)
         label = QLabel(title)
         label.setObjectName("muted")
         self.caption = label
         self.value = QLabel("—")
         self.value.setObjectName("metric")
+        self.detail = QLabel()
+        self.detail.setObjectName("muted")
+        self.detail.setWordWrap(True)
+        self.detail.hide()
         box.addWidget(label)
         box.addWidget(self.value)
+        box.addWidget(self.detail)
+
+    def set_detail(self, text):
+        self.detail.setText(text)
+        self.detail.setVisible(bool(text))
 
 
 def page_layout(widget, title, subtitle=""):
@@ -92,68 +103,113 @@ def page_layout(widget, title, subtitle=""):
 
 
 class Dashboard(QWidget):
+    PREVIEW_LIMIT = 5
+
     def __init__(self):
         super().__init__()
         box = page_layout(
             self, "Dashboard",
-            "Today's snapshot, then what hits over the Settings horizon. Cash Flow is the same events day by day.",
+            "A concise view of what is spendable now, what is owed, and where the current schedule leads.",
         )
-        grid = QGridLayout()
         self.cards = {}
-        for i, (key, label) in enumerate((
-            ("cash", "Operating cash"), ("investments", "Investments"),
-            ("material", "Material assets"), ("debt", "Total debt"),
-            ("net", "Net worth"), ("low", "30-day minimum"),
-            ("safe", "Safe to spend"), ("available", "Credit available now"),
-            ("proj_cards", "Projected cards"), ("proj_available", "Projected credit available"),
-            ("proj_debt", "Projected debt"),
-        )):
-            self.cards[key] = Card(label)
-            grid.addWidget(self.cards[key], i // 4, i % 4)
-        box.addLayout(grid)
-        self.upcoming = QLabel("Upcoming 30 days")
+        for heading, items in (
+            ("Spendable now", (
+                ("cash", "Operating cash"), ("safe", "Safe to spend"), ("low", "Forecast cash low"),
+            )),
+            ("Credit and debt", (
+                ("cards", "Cards owed"), ("available", "Credit available"),
+                ("utilization", "Card utilization"), ("debt", "Total debt"),
+            )),
+            ("Overall position", (
+                ("net", "Net worth"), ("investments", "Investments"), ("material", "Material assets"),
+            )),
+        ):
+            label = QLabel(f"<b>{heading}</b>")
+            box.addWidget(label)
+            grid = QGridLayout()
+            for column, (key, title) in enumerate(items):
+                self.cards[key] = Card(title)
+                grid.addWidget(self.cards[key], 0, column)
+            box.addLayout(grid)
+
+        self.upcoming = QLabel("Next scheduled events")
         box.addWidget(self.upcoming)
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Cash", "Investments", "Cards", "Credit available", "Debt"])
+        self.upcoming_note = QLabel()
+        self.upcoming_note.setObjectName("muted")
+        box.addWidget(self.upcoming_note)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Date", "Description", "Amount", "Funding"])
         configure_table(self.table)
-        box.addWidget(self.table, 1)
+        self.table.setMinimumHeight(150)
+        self.table.setMaximumHeight(245)
+        box.addWidget(self.table)
+        box.addStretch()
+
+    @staticmethod
+    def _percentage(value):
+        return f"{value:.1f}%" if value is not None else "-"
 
     def refresh(self):
         try:
             with session_scope() as session:
                 days, reserve, currency = projection_prefs(session)
+                today = date.today()
+                horizon_end = today + timedelta(days=days)
                 sheet = current_balance_sheet(session, currency)
-                events = generate_events(session, date.today(), date.today() + timedelta(days=days), currency)
-                rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts, sheet.investments, sheet.credit_limit)
-                self.cards["low"].caption.setText(f"{days}-day cash low")
-                self.upcoming.setText(f"Upcoming {days} days")
-                proj_cards, proj_debt, proj_available = sheet.credit_cards, sheet.debts, sheet.available_credit
-                if rows:
-                    proj_cards, proj_debt = rows[-1].running_cards, rows[-1].running_debt
-                    proj_available = rows[-1].running_available_credit
+                events = generate_events(session, today, horizon_end, currency)
+                rows = project(
+                    sheet.operating_cash, events, sheet.credit_cards, sheet.debts,
+                    sheet.investments, sheet.credit_limit,
+                )
+                future = position_at(
+                    horizon_end, rows, sheet.operating_cash, sheet.credit_cards,
+                    sheet.debts, sheet.investments, sheet.net_worth,
+                )
+                projected_available = rows[-1].running_available_credit if rows else sheet.available_credit
+                current_utilization = credit_utilization(sheet.credit_cards, sheet.credit_limit)
+                projected_utilization = credit_utilization(future.cards, sheet.credit_limit)
                 values = {
-                    "cash": sheet.operating_cash, "investments": sheet.investments,
-                    "material": sheet.material_assets, "debt": sheet.debts, "net": sheet.net_worth,
-                    "low": lowest_projected_balance(sheet.operating_cash, events),
-                    "safe": safe_to_spend(sheet.operating_cash, events, reserve),
-                    "available": sheet.available_credit, "proj_cards": proj_cards,
-                    "proj_available": proj_available, "proj_debt": proj_debt,
+                    "cash": (sheet.operating_cash, f"{days}-day forecast: {format_money(future.cash, currency)}"),
+                    "safe": (safe_to_spend(sheet.operating_cash, events, reserve),
+                             f"After {format_money(reserve, currency)} reserve"),
+                    "low": (lowest_projected_balance(sheet.operating_cash, events), f"Over the next {days} days"),
+                    "cards": (sheet.credit_cards, f"{days}-day forecast: {format_money(future.cards, currency)}"),
+                    "available": (sheet.available_credit,
+                                  f"{days}-day forecast: {format_money(projected_available, currency)}"),
+                    "utilization": (current_utilization,
+                                    f"{days}-day forecast: {self._percentage(projected_utilization)}"),
+                    "debt": (sheet.debts, f"{days}-day forecast: {format_money(future.debt, currency)}"),
+                    "net": (sheet.net_worth, f"{days}-day forecast: {format_money(future.net_worth, currency)}"),
+                    "investments": (sheet.investments, "Included in net worth, not spendable cash"),
+                    "material": (sheet.material_assets, "Included only when marked for net worth"),
                 }
-                for key, value in values.items():
-                    self.cards[key].value.setText(format_money(value))
-                self.table.setRowCount(len(rows))
-                for row, event in enumerate(rows):
+                for key, (value, detail) in values.items():
+                    self.cards[key].value.setText(
+                        self._percentage(value) if key == "utilization" else format_money(value, currency)
+                    )
+                    self.cards[key].set_detail(detail)
+
+                preview = rows[:self.PREVIEW_LIMIT]
+                self.upcoming.setText(f"Next scheduled events - {days}-day horizon")
+                remaining = max(len(rows) - len(preview), 0)
+                self.upcoming_note.setText(
+                    f"Showing the next {len(preview)} of {len(rows)} scheduled events. "
+                    + (f"{remaining} more are available in Cash Flow." if remaining else "Full detail is available in Cash Flow.")
+                )
+                self.table.setRowCount(len(preview))
+                for row, event in enumerate(preview):
                     for col, value in enumerate((
                         event.date.isoformat(), event.description,
-                        format_money(event.reporting_amount), format_money(event.running_balance),
-                        format_money(event.running_investments), format_money(event.running_cards),
-                        format_money(event.running_available_credit), format_money(event.running_debt),
+                        format_money(event.reporting_amount, currency), event.funding_summary or "-",
                     )):
                         self.table.setItem(row, col, QTableWidgetItem(value))
                 fit_table_columns(self.table)
+                self.table.setToolTip("")
         except Exception as exc:
             for card in self.cards.values():
                 card.value.setText("Unavailable")
+                card.set_detail("")
+            self.table.setRowCount(0)
             self.table.setToolTip(str(exc))
 
 
@@ -370,11 +426,19 @@ class Accounts(QWidget):
 
 
 class CashFlow(QWidget):
+    FILTERS = (
+        ("income", "Income", frozenset({"income"})),
+        ("bills", "Bills", frozenset({"expense"})),
+        ("cards", "Card charges", frozenset({"card_charge"})),
+        ("debt", "Debt payments", frozenset({"debt_payment"})),
+        ("transfers", "Transfers", frozenset({"deposit", "adjustment"})),
+    )
+
     def __init__(self):
         super().__init__()
         box = page_layout(
             self, "Cash Flow",
-            "Day-by-day timeline. Change the horizon here without changing Settings.",
+            "The complete scheduled timeline. Filters hide rows only; running balances always include every event.",
         )
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Horizon"))
@@ -384,18 +448,44 @@ class CashFlow(QWidget):
         self.apply_settings()
         controls.addWidget(self.days)
         controls.addWidget(QLabel("days"))
+        controls.addSpacing(20)
+        controls.addWidget(QLabel("Purpose"))
+        self.purpose_filter = QComboBox()
+        self.purpose_filter.addItem("All", "all")
+        self.purpose_filter.addItem("Personal", "personal")
+        self.purpose_filter.addItem("Business", "business")
+        self.purpose_filter.currentIndexChanged.connect(self.refresh)
+        controls.addWidget(self.purpose_filter)
         controls.addStretch()
         box.addLayout(controls)
-        cards = QHBoxLayout()
+
+        filters = QHBoxLayout()
+        filters.addWidget(QLabel("Show"))
+        self.type_filters = {}
+        for key, label, _event_types in self.FILTERS:
+            field = QCheckBox(label)
+            field.setChecked(True)
+            field.toggled.connect(self.refresh)
+            self.type_filters[key] = field
+            filters.addWidget(field)
+        filters.addStretch()
+        box.addLayout(filters)
+
+        cards = QGridLayout()
         self.committed, self.minimum, self.safe = Card("Committed cash"), Card("Minimum cash"), Card("Safe to spend")
         self.proj_cards, self.proj_available, self.proj_debt = Card("Projected cards"), Card("Credit available"), Card("Projected debt")
         self.flow_cards = (self.committed, self.minimum, self.safe, self.proj_cards, self.proj_available, self.proj_debt)
-        for card in self.flow_cards:
-            cards.addWidget(card)
+        for index, card in enumerate(self.flow_cards):
+            cards.addWidget(card, index / 3, index % 3)
         box.addLayout(cards)
-        self.table = QTableWidget(0, 11)
+
+        self.filter_status = QLabel()
+        self.filter_status.setObjectName("muted")
+        box.addWidget(self.filter_status)
+        self.table = QTableWidget(0, 12)
         self.table.setHorizontalHeaderLabels(
-            ["Date", "Description", "Type", "Amount", "Currency", "Funding", "Cash", "Investments", "Cards", "Credit available", "Debt"],
+            ["Date", "Description", "Type", "Purpose", "Amount", "Currency", "Funding",
+             "Cash", "Investments", "Cards", "Credit available", "Debt"],
         )
         configure_table(self.table)
         box.addWidget(self.table)
@@ -407,6 +497,14 @@ class CashFlow(QWidget):
         self.days.setCurrentText(str(days))
         self.days.blockSignals(False)
 
+    def _visible(self, event):
+        enabled_types = set()
+        for key, _label, event_types in self.FILTERS:
+            if self.type_filters[key].isChecked():
+                enabled_types.update(event_types)
+        purpose = self.purpose_filter.currentData()
+        return event.event_type in enabled_types and (purpose == "all" or event.purpose == purpose)
+
     def refresh(self):
         try:
             with session_scope() as session:
@@ -415,31 +513,39 @@ class CashFlow(QWidget):
                 sheet = current_balance_sheet(session, currency)
                 events = generate_events(session, date.today(), date.today() + timedelta(days=horizon), currency)
                 rows = project(sheet.operating_cash, events, sheet.credit_cards, sheet.debts, sheet.investments, sheet.credit_limit)
-                self.committed.value.setText(format_money(committed_cash(rows)))
-                self.minimum.value.setText(format_money(lowest_projected_balance(sheet.operating_cash, events)))
-                self.safe.value.setText(format_money(safe_to_spend(sheet.operating_cash, events, reserve)))
+                self.committed.value.setText(format_money(committed_cash(rows), currency))
+                self.minimum.value.setText(format_money(lowest_projected_balance(sheet.operating_cash, events), currency))
+                self.safe.value.setText(format_money(safe_to_spend(sheet.operating_cash, events, reserve), currency))
                 if rows:
-                    self.proj_cards.value.setText(format_money(rows[-1].running_cards))
-                    self.proj_available.value.setText(format_money(rows[-1].running_available_credit))
-                    self.proj_debt.value.setText(format_money(rows[-1].running_debt))
+                    self.proj_cards.value.setText(format_money(rows[-1].running_cards, currency))
+                    self.proj_available.value.setText(format_money(rows[-1].running_available_credit, currency))
+                    self.proj_debt.value.setText(format_money(rows[-1].running_debt, currency))
                 else:
-                    self.proj_cards.value.setText(format_money(sheet.credit_cards))
-                    self.proj_available.value.setText(format_money(sheet.available_credit))
-                    self.proj_debt.value.setText(format_money(sheet.debts))
-                self.table.setRowCount(len(rows))
-                for row, event in enumerate(rows):
+                    self.proj_cards.value.setText(format_money(sheet.credit_cards, currency))
+                    self.proj_available.value.setText(format_money(sheet.available_credit, currency))
+                    self.proj_debt.value.setText(format_money(sheet.debts, currency))
+
+                visible = [event for event in rows if self._visible(event)]
+                self.filter_status.setText(
+                    f"Showing {len(visible)} of {len(rows)} events. Summary cards and running columns retain the complete schedule."
+                )
+                self.table.setRowCount(len(visible))
+                for row, event in enumerate(visible):
                     values = (
                         event.date.isoformat(), event.description, event.event_type.replace("_", " ").title(),
-                        format_money(event.amount, event.currency), event.currency, event.funding_summary or "—",
-                        format_money(event.running_balance), format_money(event.running_investments),
-                        format_money(event.running_cards), format_money(event.running_available_credit), format_money(event.running_debt),
+                        event.purpose.title(), format_money(event.amount, event.currency), event.currency,
+                        event.funding_summary or "-", format_money(event.running_balance, currency),
+                        format_money(event.running_investments, currency), format_money(event.running_cards, currency),
+                        format_money(event.running_available_credit, currency), format_money(event.running_debt, currency),
                     )
                     for col, value in enumerate(values):
                         self.table.setItem(row, col, QTableWidgetItem(value))
                 fit_table_columns(self.table)
+                self.table.setToolTip("")
         except Exception as exc:
             for card in self.flow_cards:
                 card.value.setText("Unavailable")
+            self.table.setRowCount(0)
             self.table.setToolTip(str(exc))
 
 
@@ -586,7 +692,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         definitions = [
             ("Dashboard", Dashboard()), ("Cash Flow", CashFlow()), ("Spending", SpendingPage()),
-            ("Outlook", Outlook()), ("Progress", ProgressPage()),
+            ("Outlook", Outlook()), ("Trends", TrendsPage()),
             ("Accounts", Accounts()),
             ("Income", ManagedIncomePage()), ("Deposits", ManagedDepositPage()),
             ("Recurring Expenses", ManagedExpensePage()),

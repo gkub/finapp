@@ -29,6 +29,7 @@ class ProjectionEvent:
     running_investments: Decimal = Decimal("0")
     investment_delta: Decimal = Decimal("0")
     category: str | None = None
+    purpose: str = "personal"
     debt_id: int | None = None
     starting_debt_balance: Decimal | None = None
     backup_account_id: int | None = None
@@ -149,6 +150,7 @@ def generate_events(
                 primary_account_name=_account_name(session, income.destination_account_id),
                 primary_in_cash=_in_cash(session, income.destination_account_id),
                 primary_in_net_worth=_in_net_worth(session, income.destination_account_id),
+                purpose=income.purpose,
             ))
 
     deposits = session.scalars(select(Deposit).where(Deposit.active.is_(True))).all()
@@ -203,6 +205,7 @@ def generate_events(
                 backup_in_cash=_in_cash(session, expense.backup_account_id),
                 primary_in_net_worth=_in_net_worth(session, expense.payment_account_id),
                 backup_in_net_worth=_in_net_worth(session, expense.backup_account_id),
+                purpose=expense.purpose,
             ))
 
     debts = session.scalars(select(Debt).where(
@@ -246,6 +249,7 @@ def generate_events(
                 primary_account_name=_account_name(session, item.account_id),
                 primary_in_cash=_in_cash(session, item.account_id),
                 primary_in_net_worth=_in_net_worth(session, item.account_id),
+                purpose=item.purpose,
             ))
             continue
         native = item.amount if item.event_type == "income" else -item.amount
@@ -269,6 +273,7 @@ def generate_events(
             backup_in_cash=_in_cash(session, item.backup_account_id),
             primary_in_net_worth=_in_net_worth(session, item.account_id),
             backup_in_net_worth=_in_net_worth(session, item.backup_account_id),
+            purpose=item.purpose,
         ))
 
     return sorted(events, key=lambda event: (event.date, _ORDER.get(event.event_type, 4), event.description.casefold(), event.source_record_id))

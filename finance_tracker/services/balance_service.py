@@ -98,6 +98,13 @@ def current_balance_sheet(session: Session, reporting_currency: str = "CAD", on_
     )
 
 
+def credit_utilization(amount_owed: Decimal, credit_limit: Decimal) -> Decimal | None:
+    """Return aggregate card utilization as a percentage when a limit exists."""
+    if credit_limit <= 0:
+        return None
+    return max(amount_owed, Decimal("0")) / credit_limit * Decimal("100")
+
+
 def available_credit(debt: Debt) -> Decimal | None:
     if debt.debt_type != "credit_card" or debt.credit_limit is None:
         return None

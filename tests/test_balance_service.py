@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from finance_tracker.db.models import Account, BalanceSnapshot, Currency, Debt, InvestmentAccount, InvestmentHolding, MaterialAsset, SecurityPrice
 from finance_tracker.services.balance_service import (
-    current_balance_sheet, estimated_overdraft_interest, overdraft_headroom, supports_overdraft, update_account_balance,
+    current_balance_sheet, credit_utilization, estimated_overdraft_interest, overdraft_headroom, supports_overdraft, update_account_balance,
 )
 
 
@@ -67,3 +67,9 @@ def test_credit_card_is_not_an_overdraft_account(session: Session):
     assert supports_overdraft("credit_card") is False
     assert supports_overdraft("checking") is True
     assert estimated_overdraft_interest(card, 30) == Decimal("0")
+
+
+def test_credit_utilization_distinguishes_owed_from_available():
+    assert credit_utilization(Decimal("1250"), Decimal("5000")) == Decimal("25.00")
+    assert credit_utilization(Decimal("0"), Decimal("5000")) == Decimal("0")
+    assert credit_utilization(Decimal("100"), Decimal("0")) is None

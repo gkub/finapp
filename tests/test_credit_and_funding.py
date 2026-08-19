@@ -88,6 +88,7 @@ def test_business_wallet_income_is_consumed_before_personal_backup(session: Sess
     assert [row.running_balance for row in rows] == [Decimal("500"), Decimal("500"), Decimal("480.0000")]
     assert rows[1].funding_summary == "PayPal Business 50.00; TD 0.00"
     assert rows[2].funding_summary == "PayPal Business 80.00; TD 20.00"
+    assert [row.purpose for row in rows] == ["business", "business", "business"]
     assert committed_cash(rows) == Decimal("20.0000")
     final = position_at(
         date(2026, 8, 5), rows, Decimal("500"), Decimal("0"), Decimal("0"),
